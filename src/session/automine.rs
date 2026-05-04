@@ -59,7 +59,24 @@ impl AutomineState {
 /// Gemstone/ore block IDs typically mined in PixelWorlds.
 /// This is a starter set; expand as needed.
 /// Legacy mineable detection (kept for reference). New behavior: prefer collectibles.
+/// Mine decoration blocks that look like targets but are indestructible.
+/// From Seraph GWC decode: stalactites, bats, spiders, torches.
+pub fn is_decoration(block_id: u16) -> bool {
+    matches!(
+        block_id,
+        4143 | // MiningStalactitesTopData
+        4144 | // MiningStalactitesBottomData
+        4151 | // MiningBatData
+        4152 | // MiningSpiderData
+        4153   // MiningTorchData
+    )
+}
+
 pub fn is_mineable(block_id: u16) -> bool {
+    // Never target indestructible decorations
+    if is_decoration(block_id) {
+        return false;
+    }
     matches!(
         block_id,
         // Legacy main world mineables

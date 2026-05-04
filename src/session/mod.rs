@@ -1421,6 +1421,9 @@ impl BotSession {
                 self.apply_seed_growth_message(&message).await;
             }
             ids::PACKET_ID_DESTROY_BLOCK => {
+                if let (Ok(db_x), Ok(db_y)) = (message.get_i32("x"), message.get_i32("y")) {
+                    let _ = send_doc(&runtime.outbound_tx, protocol::make_harvest_action(db_x, db_y)).await;
+                }
                 self.apply_destroy_block_message(&message).await;
             }
             ids::PACKET_ID_NEW_COLLECTABLE | ids::PACKET_ID_COLLECTABLE_REQUEST => {
@@ -3133,6 +3136,29 @@ async fn send_world_chat(
     .await
 }
 
+/// Pickaxe block IDs from block_types.json, ordered best → worst.
+/// Without one of these equipped, the server silently ignores HB packets,
+/// which is why an un-equipped bot looks like it's "doing nothing".
+const PICKAXE_PRIORITY: &[u16] = &[
+    4195, // WeaponPickaxeDark
+    4093, // WeaponPickaxeEpic
+    4092, // WeaponPickaxeMaster
+    4091, // WeaponPickaxeHeavy
+    4090, // WeaponPickaxeSturdy
+    4089, // WeaponPickaxeBasic
+    4088, // WeaponPickaxeFlimsy
+    4087, // WeaponPickaxeCrappy
+];
+
+fn find_best_pickaxe(inventory: &[InventoryEntry]) -> Option<u16> {
+    PICKAXE_PRIORITY.iter().find_map(|&id| {
+        inventory
+            .iter()
+            .find(|e| e.block_id == id && e.amount > 0)
+            .map(|_| id)
+    })
+}
+
 async fn automine_loop(
     _session_id: &str,
     _logger: &Logger,
@@ -3145,6 +3171,19 @@ async fn automine_loop(
     // 350ms keeps a safety margin while still feeling instant.
     let mut tick = interval(Duration::from_millis(350));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    // Equip a pickaxe once per session and re-equip after losing it. Without
+    // a pickaxe in hand the server ignores all HB packets — verified via Seraph
+    // capture which logs "pickaxe 0x0ff8 equipped" before any mining attempt.
+    let mut equipped_pickaxe: Option<u16> = None;
+
+    // Per-tile HB attempt counter. After MAX_TILE_ATTEMPTS hits without the
+    // server confirming destruction (DB packet → foreground tile zeroed),
+    // the tile is considered a dead-end and excluded from target search.
+    // Matches Seraph's "tunnel-dig failed: did not break in 15 retries".
+    const MAX_TILE_ATTEMPTS: u32 = 15;
+    let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
+    let mut current_world_name: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -3222,25 +3261,58 @@ async fn automine_loop(
                     continue;
                 }
 
-                _logger.info("automine", Some(_session_id), 
-                    format!("Mining tick: pos=({},{}) world={}x{} fg_tiles={}", 
-                        player_x, player_y, world_width, world_height, foreground.len()));
-
-                // One-time dump of unique tile IDs to understand the mine layout
-                {
-                    use std::collections::BTreeMap;
-                    let mut counts: BTreeMap<u16, u32> = BTreeMap::new();
-                    for &tile_id in &foreground {
-                        if tile_id != 0 {
-                            *counts.entry(tile_id).or_insert(0) += 1;
-                        }
-                    }
-                    if !counts.is_empty() {
-                        let summary: Vec<String> = counts.iter().map(|(id, c)| format!("{}x{}", id, c)).collect();
-                        _logger.info("automine", Some(_session_id), 
-                            format!("Tile IDs in world: {}", summary.join(", ")));
+                // Equip the best available pickaxe before any HB attempts. The server
+                // silently drops mining packets from a player without one in hand.
+                if equipped_pickaxe.is_none() {
+                    if let Some(pickaxe_id) = find_best_pickaxe(&inventory) {
+                        let _ = send_doc(outbound_tx, protocol::make_wear_item(pickaxe_id as i32)).await;
+                        equipped_pickaxe = Some(pickaxe_id);
+                        _logger.info("automine", Some(_session_id),
+                            format!("equipped pickaxe block_id={pickaxe_id}"));
+                    } else {
+                        _logger.warn("automine", Some(_session_id),
+                            "no pickaxe in inventory — HB packets will be ignored by the server");
                     }
                 }
+
+                // Reset attempt counters and pickaxe state when entering a new world.
+                if current_world_name != current_world {
+                    tile_attempts.clear();
+                    equipped_pickaxe = None;
+                    current_world_name = current_world.clone();
+                }
+
+                // Drop attempt entries for tiles the server has confirmed destroyed
+                // (foreground tile is now 0). Those positions are walkable now.
+                tile_attempts.retain(|&(x, y), _| {
+                    if x < 0 || y < 0 || (x as u32) >= world_width || (y as u32) >= world_height {
+                        return false;
+                    }
+                    let idx = (y as u32 * world_width + x as u32) as usize;
+                    foreground.get(idx).copied().unwrap_or(0) != 0
+                });
+
+                // Build a masked view of the foreground where dead-end tiles are
+                // replaced with bedrock (3993 — astar's get_tile_cost returns None,
+                // making it both unreachable AND not a target candidate).
+                let mut masked_foreground = foreground.clone();
+                for (&(x, y), &attempts) in &tile_attempts {
+                    if attempts >= MAX_TILE_ATTEMPTS
+                        && x >= 0 && y >= 0
+                        && (x as u32) < world_width
+                        && (y as u32) < world_height
+                    {
+                        let idx = (y as u32 * world_width + x as u32) as usize;
+                        if let Some(t) = masked_foreground.get_mut(idx) {
+                            *t = 3993;
+                        }
+                    }
+                }
+
+                _logger.info("automine", Some(_session_id),
+                    format!("tick pos=({},{}) world={}x{} dead_ends={}",
+                        player_x, player_y, world_width, world_height,
+                        tile_attempts.values().filter(|&&n| n >= MAX_TILE_ATTEMPTS).count()));
 
                 // Godmode-by-omission: damage is fully client-side (verified via packet capture —
                 // taking damage emits only a [PPA] audio packet, never a damage packet to the
@@ -3253,58 +3325,88 @@ async fn automine_loop(
                     let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(*ex, *ey, *ai_id)).await;
                 }
 
-                // Pathfinding & Breaking Blocks
-                match automine::find_best_target(player_x, player_y, world_width, world_height, &foreground) {
+                // Track tiles we attempt to break this tick so we can bump their counters
+                // and log dead-end transitions outside the pathfinding closure.
+                let mut hit_this_tick: Option<(i32, i32)> = None;
+
+                // Pathfinding & Breaking Blocks (uses dead-end-masked foreground)
+                match automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground) {
                     Some((target_x, target_y)) => {
-                        _logger.info("automine", Some(_session_id), 
-                            format!("Target found at ({},{}) from pos ({},{})", target_x, target_y, player_x, player_y));
-                        
-                        match automine::get_path_to_target(player_x, player_y, target_x, target_y, &foreground, world_width, world_height) {
+                        _logger.info("automine", Some(_session_id),
+                            format!("target=({},{}) pos=({},{})", target_x, target_y, player_x, player_y));
+
+                        match automine::get_path_to_target(player_x, player_y, target_x, target_y, &masked_foreground, world_width, world_height) {
                             Some(path) => {
-                                _logger.info("automine", Some(_session_id), 
-                                    format!("Path found with {} steps", path.len()));
-                                
                                 if path.len() > 1 {
                                     let next_step = path[1];
                                     let next_index = (next_step.1 as u32 * world_width + next_step.0 as u32) as usize;
                                     let next_block = foreground.get(next_index).copied().unwrap_or(0);
-                                    
-                                    if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        _logger.info("automine", Some(_session_id), 
-                                            format!("Breaking block {} at ({},{})", next_block, next_step.0, next_step.1));
-                                        let _ = send_doc(outbound_tx, protocol::make_hit_block(next_step.0, next_step.1)).await;
-                                    } else {
-                                        _logger.info("automine", Some(_session_id),
-                                            format!("Moving to ({},{}) -> sending mp+mP exclusive batch", next_step.0, next_step.1));
-                                        let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, movement::ANIM_IDLE, movement::DIR_LEFT);
-                                        let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
 
-                                        // Optimistically update local position so the next tick targets from
-                                        // the new spot — the server echo via maybe_update_player_positions
-                                        // will correct us if the move was rejected.
+                                    // Direction: face toward the target
+                                    let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+
+                                    if !crate::pathfinding::astar::is_walkable_tile(next_block) {
+                                        // Block in our path — swing pickaxe while moving into it (a=7 HitMove)
+                                        let pkts = protocol::make_mine_move_and_hit(
+                                            player_x, player_y,  // stay at current pos
+                                            next_step.0, next_step.1,  // hit the block ahead
+                                            dir,
+                                        );
+                                        let _ = send_docs(outbound_tx, pkts).await;
+                                        hit_this_tick = Some((next_step.0, next_step.1));
+                                    } else {
+                                        // Path is clear — walk forward
+                                        let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, movement::ANIM_WALK, dir);
+                                        let _ = send_docs(outbound_tx, move_pkts).await;
+
+                                        // Update local position
                                         {
                                             let mut st = state.write().await;
                                             st.player_position.map_x = Some(next_step.0 as f64);
                                             st.player_position.map_y = Some(next_step.1 as f64);
                                         }
-                                        
+
+                                        // If we just arrived next to the target, hit it too
                                         if path.len() == 2 {
-                                            let _ = send_doc(outbound_tx, protocol::make_hit_block(target_x, target_y)).await;
+                                            let hit_pkts = protocol::make_mine_hit_stationary(
+                                                next_step.0, next_step.1,
+                                                target_x, target_y,
+                                                dir,
+                                            );
+                                            let _ = send_docs(outbound_tx, hit_pkts).await;
+                                            hit_this_tick = Some((target_x, target_y));
                                         }
                                     }
                                 } else {
-                                    _logger.info("automine", Some(_session_id), "On target, hitting it");
-                                    let _ = send_doc(outbound_tx, protocol::make_hit_block(target_x, target_y)).await;
+                                    // Already on top of target — stationary hit (a=6 Hit)
+                                    let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+                                    let hit_pkts = protocol::make_mine_hit_stationary(
+                                        player_x, player_y,
+                                        target_x, target_y,
+                                        dir,
+                                    );
+                                    let _ = send_docs(outbound_tx, hit_pkts).await;
+                                    hit_this_tick = Some((target_x, target_y));
                                 }
                             }
                             None => {
-                                _logger.warn("automine", Some(_session_id), 
-                                    format!("No path found to target ({},{})", target_x, target_y));
+                                _logger.warn("automine", Some(_session_id),
+                                    format!("no path to target ({},{}) — adding to dead-end list", target_x, target_y));
+                                tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
                             }
                         }
                     }
                     None => {
-                        _logger.info("automine", Some(_session_id), "No target found - mine may be cleared");
+                        _logger.info("automine", Some(_session_id), "no targets — mine cleared or all dead-ends");
+                    }
+                }
+
+                if let Some((hx, hy)) = hit_this_tick {
+                    let attempts = tile_attempts.entry((hx, hy)).or_insert(0);
+                    *attempts += 1;
+                    if *attempts == MAX_TILE_ATTEMPTS {
+                        _logger.warn("automine", Some(_session_id),
+                            format!("dead-end: tile ({},{}) did not break in {} retries", hx, hy, MAX_TILE_ATTEMPTS));
                     }
                 }
             }

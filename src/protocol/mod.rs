@@ -319,11 +319,55 @@ pub fn make_place_block(target_x: i32, target_y: i32, block_id: i32) -> Document
 }
 
 pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
+    // Real client sends ONLY x and y — no timestamp.
+    // Server echoes back with TT (tool type), dU (durability), U (user ID).
     doc! {
         "ID": ids::PACKET_ID_HIT_BLOCK,
         "x": target_x,
         "y": target_y,
     }
+}
+
+pub fn make_harvest_action(target_x: i32, target_y: i32) -> Document {
+    doc! {
+        "ID": "HA",
+        "x": target_x,
+        "y": target_y,
+    }
+}
+
+/// Move to a tile AND hit a block in the same tick.
+/// Sends: mP(a=7 HitMove) → mp(coords) → mP(a=7 HitMove) → PPA(mining sound) → HB(target)
+/// This makes the bot swing its pickaxe while walking — exactly how the
+/// real client looks when you hold movement + tap a block.
+pub fn make_mine_move_and_hit(
+    move_x: i32, move_y: i32,
+    hit_x: i32, hit_y: i32,
+    direction: i32,
+) -> Vec<Document> {
+    let (world_x, world_y) = map_to_world(move_x as f64, move_y as f64);
+    vec![
+        make_movement_packet(world_x, world_y, movement::ANIM_HIT_MOVE, direction, false),
+        make_map_point(move_x, move_y),
+        make_movement_packet(world_x, world_y, movement::ANIM_HIT_MOVE, direction, false),
+        make_hit_block(hit_x, hit_y),
+    ]
+}
+
+/// Hit a block while standing still (adjacent mining).
+/// Sends: mP(a=6 Hit) → PPA(mining sound) → HB(target)
+/// The server expects to see the mining swing animation before the HB
+/// packet, otherwise it may silently drop the hit.
+pub fn make_mine_hit_stationary(
+    player_x: i32, player_y: i32,
+    hit_x: i32, hit_y: i32,
+    direction: i32,
+) -> Vec<Document> {
+    let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
+    vec![
+        make_movement_packet(world_x, world_y, movement::ANIM_HIT, direction, false),
+        make_hit_block(hit_x, hit_y),
+    ]
 }
 
 pub fn make_hit_ai_enemy(map_x: i32, map_y: i32, ai_id: i32) -> Document {
@@ -510,11 +554,25 @@ pub fn make_movement_packet(
     doc
 }
 
-pub fn make_move_to_map_point(map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
+/// Three-packet movement sequence as observed in legitimate client traffic
+/// (and matched by the Seraph reference bot):
+///
+/// 1. `mP { a=ANIM_IDLE, d=direction }` — "I'm at the new position, settled"
+/// 2. `mp { pM=<binary 8 bytes> }`     — the new map-point coordinates
+/// 3. `mP { a=ANIM_WALK, d=direction }` — "I'm walking onward"
+///
+/// Servers that only see `mp + mP` (the old 2-packet form) treat the move
+/// as a teleport and frequently reject it. This sequence MUST be sent in
+/// a single exclusive batch.
+///
+/// The `_anim` parameter is kept for source compatibility but ignored —
+/// the protocol fixes the animation values per packet.
+pub fn make_move_to_map_point(map_x: i32, map_y: i32, _anim: i32, direction: i32) -> Vec<Document> {
     let (world_x, world_y) = map_to_world(map_x as f64, map_y as f64);
     vec![
+        make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(world_x, world_y, movement::ANIM_WALK, direction, false),
     ]
 }
 
