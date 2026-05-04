@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Bug,
   ChatCenteredDots,
@@ -30,7 +30,6 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Dialog,
@@ -87,7 +86,6 @@ import type {
   AuthKind,
   BlockNameMap,
   DashboardAuthStatus,
-  LogEvent,
   LuaScriptStatusSnapshot,
   MinimapSnapshot,
   ServerEvent,
@@ -119,135 +117,9 @@ const EMPTY_INPUTS: SessionInputs = {
 }
 
 const CLOTHING_TYPES = new Set([768, 1024])
-const LOG_TOKEN_PATTERN =
-  /([A-Z][A-Z0-9]{0,10})(?= \{)|([A-Za-z_][A-Za-z0-9_]*=)|("(?:[^"\\]|\\.)*")|(\b\d+(?:\.\d+)?\b)/g
 
-function formatLogTimestamp(timestampMs: number) {
-  return new Date(timestampMs).toISOString().replace("T", " ").replace("Z", " UTC")
-}
 
-function logPrefixLabel(event: LogEvent) {
-  if (event.direction === "incoming") {
-    return "[<]"
-  }
-  if (event.direction === "outgoing") {
-    return "[>]"
-  }
-  if (event.level === "warn") {
-    return "[!]"
-  }
-  if (event.level === "error") {
-    return "[x]"
-  }
-  if (event.level === "state") {
-    return "[*]"
-  }
-  return "[i]"
-}
 
-function logPrefixClass(event: LogEvent) {
-  if (event.direction === "incoming") {
-    return "text-emerald-300"
-  }
-  if (event.direction === "outgoing") {
-    return "text-sky-300"
-  }
-  if (event.level === "warn") {
-    return "text-amber-300"
-  }
-  if (event.level === "error") {
-    return "text-rose-300"
-  }
-  if (event.level === "state") {
-    return "text-fuchsia-300"
-  }
-  return "text-slate-300"
-}
-
-function logScopeClass(event: LogEvent) {
-  if (event.transport === "tcp") {
-    return "border-sky-500/30 bg-sky-500/10 text-sky-200"
-  }
-  if (event.transport === "http") {
-    return "border-violet-500/30 bg-violet-500/10 text-violet-200"
-  }
-  if (event.level === "error") {
-    return "border-rose-500/30 bg-rose-500/10 text-rose-200"
-  }
-  if (event.level === "warn") {
-    return "border-amber-500/30 bg-amber-500/10 text-amber-200"
-  }
-  if (event.level === "state") {
-    return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200"
-  }
-  return "border-white/10 bg-white/5 text-slate-200"
-}
-
-function renderLogMessage(message: string) {
-  const nodes: ReactNode[] = []
-  let lastIndex = 0
-  let tokenIndex = 0
-
-  for (const match of message.matchAll(LOG_TOKEN_PATTERN)) {
-    const [token, packetId, key, quoted, number] = match
-    const start = match.index ?? 0
-
-    if (start > lastIndex) {
-      nodes.push(
-        <span key={`text-${tokenIndex}`}>{message.slice(lastIndex, start)}</span>,
-      )
-    }
-
-    let className = "text-slate-200"
-    if (packetId) {
-      className = "font-semibold text-cyan-300"
-    } else if (key) {
-      className = "text-sky-300"
-    } else if (quoted) {
-      className = "text-emerald-300"
-    } else if (number) {
-      className = "text-amber-200"
-    }
-
-    nodes.push(
-      <span key={`token-${tokenIndex}`} className={className}>
-        {token}
-      </span>,
-    )
-
-    lastIndex = start + token.length
-    tokenIndex += 1
-  }
-
-  if (lastIndex < message.length) {
-    nodes.push(<span key={`tail-${tokenIndex}`}>{message.slice(lastIndex)}</span>)
-  }
-
-  return nodes
-}
-
-function LogLine({ event }: { event: LogEvent }) {
-  return (
-    <div className="border-b border-white/5 px-4 py-2 last:border-b-0">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="text-slate-500">{formatLogTimestamp(event.timestamp_ms)}</span>
-        <span className={`font-semibold ${logPrefixClass(event)}`}>{logPrefixLabel(event)}</span>
-        <span
-          className={`rounded-md border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.18em] ${logScopeClass(event)}`}
-        >
-          {event.scope}
-          {event.transport ? ` ${event.transport}` : ""}
-        </span>
-        {event.session_id ? (
-          <span className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-300">
-            session={event.session_id}
-          </span>
-        ) : null}
-      </div>
-      <div className="pt-1 text-slate-200">{renderLogMessage(event.message)}</div>
-    </div>
-  )
-}
 
 function App() {
   const [authKind, setAuthKind] = useState<AuthKind>("android_device")
@@ -267,7 +139,7 @@ function App() {
   )
   const [hoverTiles, setHoverTiles] = useState<Record<string, string>>({})
   const [dropAmounts, setDropAmounts] = useState<Record<string, string>>({})
-  const [logs, setLogs] = useState<LogEvent[]>([])
+
   const [blockNames, setBlockNames] = useState<BlockNameMap>({})
   const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [tutorialCompleted, setTutorialCompleted] =
@@ -275,8 +147,7 @@ function App() {
   const [connecting, setConnecting] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string>("")
   const reconnectTimerRef = useRef<number | null>(null)
-  const logViewportRef = useRef<HTMLDivElement | null>(null)
-  const shouldAutoScrollLogsRef = useRef(true)
+
 
   const dashboardAuthenticated = dashboardStatus?.authenticated ?? false
 
@@ -396,7 +267,8 @@ function App() {
       socket.onmessage = (event) => {
         const payload = JSON.parse(event.data) as ServerEvent
         if (payload.type === "log") {
-          setLogs((current) => [...current.slice(-499), payload.event])
+          // Log state updates disabled to prevent UI lag as per user request
+          // setLogs((current) => [...current.slice(-499), payload.event])
           return
         }
         if (payload.type === "session") {
@@ -573,13 +445,7 @@ function App() {
     [refreshDashboardStatus, refreshLuaStatus],
   )
 
-  useEffect(() => {
-    const viewport = logViewportRef.current
-    if (!viewport || !shouldAutoScrollLogsRef.current) {
-      return
-    }
-    viewport.scrollTop = viewport.scrollHeight
-  }, [logs])
+
 
   const createAuthInput = useMemo<AuthInput>(() => {
     if (authKind === "jwt") {
@@ -681,13 +547,13 @@ function App() {
   if (!dashboardStatus || !dashboardAuthenticated) {
     const registered = dashboardStatus?.registered ?? false
     return (
-      <div className="min-h-screen bg-[radial-gradient(circle_at_top,#14212f_0%,#0d141c_45%,#081018_100%)] text-foreground">
+      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.2_0.1_260),oklch(0.05_0.01_240))] text-foreground selection:bg-primary/30">
         <div className="mx-auto flex min-h-screen max-w-[640px] items-center px-4 py-10">
-          <Card className="w-full border-white/10 bg-card/90 ring-white/10">
+          <Card className="w-full glass-dark ring-1 ring-white/10">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Moon className="size-4" />
-                Moonlight Dashboard Locked
+              <CardTitle className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+                <Moon className="size-6 text-primary animate-pulse" />
+                <span className="text-gradient">Moonlight Dashboard Locked</span>
               </CardTitle>
               <CardDescription>
                 {registered
@@ -766,13 +632,13 @@ function App() {
     timestampMs ? new Date(timestampMs).toISOString().replace("T", " ").replace("Z", " UTC") : "-"
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#14212f_0%,#0d141c_45%,#081018_100%)] text-foreground">
-      <div className="mx-auto grid max-w-[1800px] gap-4 px-3 py-4 sm:gap-6 sm:px-4 sm:py-6 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
-        <Card className="border-white/10 bg-card/90 ring-white/10 xl:sticky xl:top-4 xl:self-start">
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.25_0.12_260),oklch(0.02_0.02_240))] text-foreground selection:bg-primary/30">
+      <div className="mx-auto grid max-w-[1800px] gap-6 px-4 py-6 xl:grid-cols-[380px_1fr]">
+        <Card className="glass xl:sticky xl:top-6 xl:self-start overflow-hidden border-white/10 shadow-2xl">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Moon className="size-4" />
-              Moonlight Dashboard
+            <CardTitle className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+              <Moon className="size-6 text-primary" />
+              <span className="text-gradient">Moonlight</span>
             </CardTitle>
             <CardDescription>
               Create sessions, then manage every bot from its own panel.
@@ -884,41 +750,7 @@ function App() {
         </Card>
 
         <div className="grid gap-6">
-          <Card className="border-white/10 bg-card/90 ring-white/10">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Bug className="size-4" />
-                Live Log
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea
-                className="h-44 rounded-xl border border-white/10 bg-[#081018] sm:h-56"
-                viewportRef={logViewportRef}
-                viewportProps={{
-                  onScroll: (event) => {
-                    const target = event.currentTarget
-                    const distanceFromBottom =
-                      target.scrollHeight - target.scrollTop - target.clientHeight
-                    shouldAutoScrollLogsRef.current = distanceFromBottom < 12
-                  },
-                }}
-              >
-                <div className="font-mono text-[11px] leading-5">
-                  {logs.length ? (
-                    logs.map((event, index) => (
-                      <LogLine
-                        key={`${event.timestamp_ms}-${event.scope}-${event.session_id ?? "global"}-${index}`}
-                        event={event}
-                      />
-                    ))
-                  ) : (
-                    <div className="px-4 py-3 text-slate-400">No events yet.</div>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+
 
           <div className="grid gap-4">
             {sessions.length ? (
@@ -929,20 +761,19 @@ function App() {
               >
                 <div className="-mx-1 overflow-x-auto px-1">
                   <TabsList
-                    variant="line"
-                    className="flex w-max min-w-full gap-2 rounded-2xl border border-white/10 bg-card/90 p-2"
+                    className="flex w-max min-w-full gap-2 rounded-2xl border border-white/5 bg-black/20 p-2 backdrop-blur-md"
                   >
                     {sessions.map((session) => (
                       <TabsTrigger
                         key={session.id}
                         value={session.id}
-                        className="flex-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 data-active:bg-white/10"
+                        className="flex-none rounded-xl border border-white/5 bg-white/5 px-4 py-2 transition-all data-active:border-primary/50 data-active:bg-primary/10 data-active:text-primary-foreground"
                       >
-                        <div className="flex items-center gap-2">
-                          <span>{session.id}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="font-bold tracking-tight">{session.id}</span>
                           <Badge
                             variant={statusVariant(session.status)}
-                            className="rounded-full px-2"
+                            className="rounded-full px-2 text-[9px] font-bold uppercase"
                           >
                             {session.status}
                           </Badge>
@@ -958,9 +789,9 @@ function App() {
                   }
                   const inputs = sessionInputs[session.id] ?? EMPTY_INPUTS
                   const minimap = minimaps[session.id] ?? null
-                  return (
-                    <TabsContent key={session.id} value={session.id} className="mt-0">
-                      <Card className="border-white/10 bg-card/90 ring-white/10">
+                    return (
+                      <TabsContent key={session.id} value={session.id} className="mt-0">
+                        <Card className="glass overflow-hidden border-white/10 shadow-2xl transition-all">
                         <CardHeader>
                           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                             <div className="grid gap-1">
@@ -995,11 +826,11 @@ function App() {
                         <CardContent className="grid gap-4">
                           <div className="grid gap-3 xl:grid-cols-[minmax(320px,1.15fr)_minmax(320px,.85fr)]">
                             <div className="grid gap-3">
-                              <div className="grid gap-2 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              <Waves className="size-3.5" />
-                              Minimap
-                            </div>
+                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                <Waves className="size-3.5" />
+                                Minimap & Spatial Position
+                              </div>
                             <MinimapPanel
                               minimap={minimap}
                               playerPosition={session.player_position}
@@ -1011,11 +842,11 @@ function App() {
                             </div>
                               </div>
 
-                              <div className="grid gap-2 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              <Gear className="size-3.5" />
-                              Inventory
-                            </div>
+                                <div className="grid gap-2 rounded-2xl glass-dark p-4">
+                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                <Gear className="size-3.5" />
+                                Inventory Storage
+                              </div>
                             <div className="flex flex-wrap gap-2">
                               {session.inventory.length ? (
                                 session.inventory.map((item) => {
@@ -1113,11 +944,11 @@ function App() {
                             </div>
 
                             <div className="grid gap-3">
-                              <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              <NavigationArrow className="size-3.5" />
-                              World Controls
-                            </div>
+                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                <NavigationArrow className="size-3.5" />
+                                World Navigation
+                              </div>
                             <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
                               <Input
                                 value={inputs.world}
@@ -1174,11 +1005,11 @@ function App() {
                             </div>
                               </div>
 
-                              <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              <GameController className="size-3.5" />
-                              Joystick
-                            </div>
+                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                <GameController className="size-3.5" />
+                                Movement Matrix
+                              </div>
                             <div className="grid gap-2">
                               <div className="grid grid-cols-3 gap-2">
                                 <div />
@@ -1225,11 +1056,11 @@ function App() {
                             </div>
                               </div>
 
-                              <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              <Fish className="size-3.5" />
-                              Auto Fishing
-                            </div>
+                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                <Fish className="size-3.5" />
+                                Automated Extraction (Fishing)
+                              </div>
                             <Input
                               value={inputs.bait}
                               onChange={(event) =>
@@ -1271,8 +1102,8 @@ function App() {
                             </div>
                               </div>
 
-                              <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                               <ChatCenteredDots className="size-3.5" />
                               Chat And Spam
                             </div>
@@ -1357,30 +1188,30 @@ function App() {
                             </div>
                           </div>
 
-                          <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                          <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                               <Moon className="size-3.5" />
                               Moonlight Automine
                             </div>
                             <div className="grid grid-cols-2 gap-2">
                               <Button
-                                variant="outline"
-                                className="rounded-xl border-emerald-500/20 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
-                                onClick={() => void runAction(() => startAutomine(session.id))}
-                              >
-                                Start Automine
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-rose-500/20 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
-                                onClick={() => void runAction(() => stopAutomine(session.id))}
-                              >
-                                Stop
-                              </Button>
+                                 variant="outline"
+                                 className="rounded-xl border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold hover:bg-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]"
+                                 onClick={() => void runAction(() => startAutomine(session.id))}
+                               >
+                                 Engage Automine
+                               </Button>
+                               <Button
+                                 variant="outline"
+                                 className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 font-bold hover:bg-rose-500/20 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]"
+                                 onClick={() => void runAction(() => stopAutomine(session.id))}
+                               >
+                                 Disengage
+                               </Button>
                             </div>
                           </div>
-                              <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/3 p-3">
-                            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                               <Bug className="size-3.5" />
                               Lua Script
                             </div>

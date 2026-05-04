@@ -291,6 +291,16 @@ impl BotSession {
                     position: position.clone(),
                 })
                 .collect(),
+            ai_enemies: state
+                .ai_enemies
+                .values()
+                .map(|e| crate::models::AiEnemySnapshot {
+                    ai_id: e.ai_id,
+                    map_x: e.map_x,
+                    map_y: e.map_y,
+                    alive: e.alive,
+                })
+                .collect(),
         })
     }
 
@@ -1814,6 +1824,25 @@ impl BotSession {
             }
             return;
         }
+
+        if let Ok(ai_id) = message.get_i32("AIid") {
+            let mut state = self.state.write().await;
+            if let Some(ai) = state.ai_enemies.get_mut(&ai_id) {
+                let mut dummy_pos = PlayerPosition {
+                    map_x: Some(ai.map_x as f64),
+                    map_y: Some(ai.map_y as f64),
+                    world_x: None,
+                    world_y: None,
+                };
+                if update_player_position_from_message(message, &mut dummy_pos) {
+                    if let Some(x) = dummy_pos.map_x { ai.map_x = x as i32; }
+                    if let Some(y) = dummy_pos.map_y { ai.map_y = y as i32; }
+                    drop(state);
+                    self.publish_snapshot_position_throttled().await;
+                }
+            }
+            return;
+        }
     }
 
     async fn remove_other_player(&self, message: &Document) {
@@ -1983,8 +2012,21 @@ impl BotSession {
         let Ok(ai_id) = message.get_i32("AIid") else {
             return;
         };
-        let map_x = message.get_i32("x").unwrap_or_default();
-        let map_y = message.get_i32("y").unwrap_or_default();
+        let _ = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("ai_debug.log")
+            .await
+            .map(|mut f| {
+                use tokio::io::AsyncWriteExt;
+                let _ = f.write_all(format!("AIHD: {}\n", message).as_bytes());
+            });
+
+        let x_val = message.get_f64("x").ok().or_else(|| message.get_i32("x").ok().map(|v| v as f64)).unwrap_or_default();
+        let y_val = message.get_f64("y").ok().or_else(|| message.get_i32("y").ok().map(|v| v as f64)).unwrap_or_default();
+        
+        let map_x = (x_val / 32.0) as i32;
+        let map_y = (y_val / 32.0) as i32;
         let killed = message.get_bool("IC").unwrap_or(false)
             || message.get_i32("HBv").map(|hp| hp <= 0).unwrap_or(false);
 
@@ -2028,16 +2070,51 @@ impl BotSession {
             return;
         }
 
-        // Tentative parse: ai_id (4) | map_x (4) | map_y (4) | rest...
-        // If positions look bogus once we see real data we'll revise.
         let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
-        let map_x = i32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
-        let map_y = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
+        let mut map_x = 0;
+        let mut map_y = 0;
 
-        // Hex dump for offline RE — temporary until we trust the layout.
+        // Try to find valid float coordinates
+        let mut found_float = false;
+        for offset in (0..blob.len().saturating_sub(4)).step_by(4) {
+            let val = f32::from_le_bytes([blob[offset], blob[offset+1], blob[offset+2], blob[offset+3]]);
+            if val > 0.0 && val < 500.0 && (val * 32.0).fract() < 0.1 {
+                // looks like a valid world coordinate!
+                if !found_float {
+                    map_x = (val / 0.32) as i32; // Assuming world_x / TILE_WIDTH
+                    found_float = true;
+                } else if found_float {
+                    map_y = (val / 0.32) as i32;
+                    break;
+                }
+            }
+        }
+
+        if !found_float {
+            // Try to find valid int coordinates
+            for offset in (4..blob.len().saturating_sub(4)).step_by(4) {
+                let val = i32::from_le_bytes([blob[offset], blob[offset+1], blob[offset+2], blob[offset+3]]);
+                if val > 0 && val < 200 {
+                    if map_x == 0 {
+                        map_x = val;
+                    } else if map_y == 0 {
+                        map_y = val;
+                        break;
+                    }
+                }
+            }
+        }
+
         let hex = blob.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut debug_vals = String::new();
+        for i in (0..blob.len().saturating_sub(4)).step_by(2) {
+            let u16_val = u16::from_le_bytes([blob[i], blob[i+1]]);
+            let i32_val = if i + 3 < blob.len() { i32::from_le_bytes([blob[i], blob[i+1], blob[i+2], blob[i+3]]) } else { 0 };
+            debug_vals.push_str(&format!("{}:[u16={},i32={}] ", i, u16_val, i32_val));
+        }
+
         self.logger.info("session", Some(&self.id),
-            format!("AI spawn ai_id={ai_id} guess_pos=({map_x},{map_y}) raw={hex}"));
+            format!("AI spawn ID={} POS=({},{}) RAW={} DEBUG={}", ai_id, map_x, map_y, hex, debug_vals));
 
         let mut state = self.state.write().await;
         state.ai_enemies.insert(
@@ -3280,7 +3357,7 @@ async fn automine_loop(
                 }
             }
             _ = tick.tick() => {
-                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, nearby_enemies) = {
+                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, nearby_enemies, all_enemies) = {
                     let st = state.read().await;
                     let px = st.player_position.map_x.unwrap_or(0.0) as i32;
                     let py = st.player_position.map_y.unwrap_or(0.0) as i32;
@@ -3288,18 +3365,20 @@ async fn automine_loop(
                     let current_world = st.current_world.clone();
                     let session_status = st.status.clone();
 
-                    // Tracked AI enemies within melee range (Manhattan <= 1).
-                    // Populated by track_ai_enemy() from server AIHD packets.
                     let nearby_enemies: Vec<(i32, i32, i32)> = st.ai_enemies.values()
-                        .filter(|e| e.alive
-                            && (e.map_x - px).abs() + (e.map_y - py).abs() <= 1)
+                        .filter(|e| e.alive && (e.map_x - px).abs() <= 3 && (e.map_y - py).abs() <= 3)
                         .map(|e| (e.map_x, e.map_y, e.ai_id))
                         .collect();
 
+                    let all_enemies: Vec<(i32, i32)> = st.ai_enemies.values()
+                        .filter(|e| e.alive)
+                        .map(|e| (e.map_x, e.map_y))
+                        .collect();
+
                     if let Some(w) = &st.world {
-                        (px, py, w.width, w.height, st.world_foreground_tiles.clone(), current_world, inventory, session_status, nearby_enemies)
+                        (px, py, w.width, w.height, st.world_foreground_tiles.clone(), current_world, inventory, session_status, nearby_enemies, all_enemies)
                     } else {
-                        (px, py, 0, 0, vec![], current_world, inventory, session_status, nearby_enemies)
+                        (px, py, 0, 0, vec![], current_world, inventory, session_status, nearby_enemies, all_enemies)
                     }
                 };
 
@@ -3341,7 +3420,7 @@ async fn automine_loop(
                 if world_width == 0 {
                     // World data not loaded yet, send a movement packet to stay alive
                     if is_in_mine {
-                        _logger.info("automine", Some(_session_id), "In MINEWORLD but world data not loaded yet, sending keepalive...");
+
                         let move_pkts = protocol::make_move_to_map_point(player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                     }
@@ -3354,8 +3433,6 @@ async fn automine_loop(
                     if let Some(pickaxe_id) = find_best_pickaxe(&inventory) {
                         let _ = send_doc(outbound_tx, protocol::make_wear_item(pickaxe_id as i32)).await;
                         equipped_pickaxe = Some(pickaxe_id);
-                        _logger.info("automine", Some(_session_id),
-                            format!("equipped pickaxe block_id={pickaxe_id}"));
                     } else {
                         _logger.warn("automine", Some(_session_id),
                             "no pickaxe in inventory — HB packets will be ignored by the server");
@@ -3395,21 +3472,25 @@ async fn automine_loop(
                         }
                     }
                 }
-
-                _logger.info("automine", Some(_session_id),
-                    format!("tick pos=({},{}) world={}x{} dead_ends={}",
-                        player_x, player_y, world_width, world_height,
-                        tile_attempts.values().filter(|&&n| n >= MAX_TILE_ATTEMPTS).count()));
-
+                for (ex, ey) in &all_enemies {
+                    let idx = (*ey as u32 * world_width + *ex as u32) as usize;
+                    if let Some(t) = masked_foreground.get_mut(idx) {
+                        // Mark AI tiles as obsidian (non-destructible dead-end) for pathfinding
+                        *t = 3993;
+                    }
+                }
                 // Godmode-by-omission: damage is fully client-side (verified via packet capture —
                 // taking damage emits only a [PPA] audio packet, never a damage packet to the
                 // server). An external bot that never simulates self-damage is implicitly invincible,
                 // so we no longer wear damage/fighting potions.
 
-                // Auto-hit AI enemies in melee range. Server AIHD response updates ai_enemies;
-                // when IC=true or HBv<=0, track_ai_enemy removes the entry and we stop hitting.
+                // Auto-hit AI enemies in melee range. 
+                // CRITICAL: Only hit if we have valid non-zero coordinates to avoid reach-hack kicks.
                 for (ex, ey, ai_id) in &nearby_enemies {
-                    let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(*ex, *ey, *ai_id)).await;
+                    if *ex != 0 && *ey != 0 {
+                        _logger.info("automine", Some(&_session_id), format!("Hitting AI enemy ID={} at ({},{})", ai_id, ex, ey));
+                        let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(*ex, *ey, *ai_id)).await;
+                    }
                 }
 
                 // Track tiles we attempt to break this tick so we can bump their counters
@@ -3419,9 +3500,6 @@ async fn automine_loop(
                 // Pathfinding & Breaking Blocks (uses dead-end-masked foreground)
                 match automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground) {
                     Some((target_x, target_y)) => {
-                        _logger.info("automine", Some(_session_id),
-                            format!("target=({},{}) pos=({},{})", target_x, target_y, player_x, player_y));
-
                         match automine::get_path_to_target(player_x, player_y, target_x, target_y, &masked_foreground, world_width, world_height) {
                             Some(path) => {
                                 if path.len() > 1 {
@@ -3441,11 +3519,9 @@ async fn automine_loop(
                                                    else if is_moving_down { movement::ANIM_FALL } 
                                                    else { movement::ANIM_HIT_MOVE };
 
-                                        _logger.info("automine", Some(_session_id),
-                                            format!("path-hit: swinging at block ({},{}) from pos ({},{}) with anim={}", next_step.0, next_step.1, player_x, player_y, anim));
-
                                         // Block in our path — swing pickaxe while moving into it
                                         // Sent as one exclusive batch so the swing+hit+close are atomic.
+                                        _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
                                             next_step.0, next_step.1,
@@ -3464,9 +3540,6 @@ async fn automine_loop(
                                                    else if !is_grounded { movement::ANIM_FALL }
                                                    else { movement::ANIM_WALK };
 
-                                        _logger.info("automine", Some(_session_id),
-                                            format!("path-move: walking to empty tile ({},{}) from pos ({},{}) with anim={}", next_step.0, next_step.1, player_x, player_y, anim));
-
                                         // Path is clear — walk forward (3-packet movement, exclusive batch)
                                         let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
@@ -3478,9 +3551,6 @@ async fn automine_loop(
                                         }
 
                                         if path.len() == 2 {
-                                            _logger.info("automine", Some(_session_id),
-                                                format!("adjacent-hit: mining block ({},{}) from pos ({},{}) after walking", target_x, target_y, next_step.0, next_step.1));
-
                                             let hit_pkts = protocol::make_mine_hit_stationary(
                                                 next_step.0, next_step.1,
                                                 target_x, target_y,
@@ -3494,9 +3564,6 @@ async fn automine_loop(
                                     // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
                                     
-                                    _logger.info("automine", Some(_session_id),
-                                        format!("on-top-hit: mining block ({},{}) from pos ({},{}) (already adjacent)", target_x, target_y, player_x, player_y));
-
                                     let hit_pkts = protocol::make_mine_hit_stationary(
                                         player_x, player_y,
                                         target_x, target_y,
@@ -3507,17 +3574,11 @@ async fn automine_loop(
                                 }
                             }
                             None => {
-                                _logger.warn("automine", Some(_session_id),
-                                    format!("no path to target ({},{}) — adding to dead-end list", target_x, target_y));
                                 tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
                             }
                         }
                     }
-                    None => {
-                        _logger.info("automine", Some(_session_id), "no targets — mine cleared or all dead-ends. sending idle mP.");
-                        // Send an empty movement packet so the server doesn't drop the connection for AFK
-                        let _ = send_docs_exclusive(outbound_tx, vec![protocol::make_empty_movement()]).await;
-                    }
+                    None => {}
                 }
 
                 if let Some((hx, hy)) = hit_this_tick {

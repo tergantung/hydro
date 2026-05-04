@@ -105,6 +105,15 @@ pub struct MinimapSnapshot {
     pub wiring_tiles: Vec<u16>,
     pub player_position: PlayerPosition,
     pub other_players: Vec<RemotePlayerSnapshot>,
+    pub ai_enemies: Vec<AiEnemySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiEnemySnapshot {
+    pub ai_id: i32,
+    pub map_x: i32,
+    pub map_y: i32,
+    pub alive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

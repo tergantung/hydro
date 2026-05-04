@@ -242,6 +242,19 @@ function MinimapPanelImpl({ minimap, playerPosition, currentWorld, onHoverChange
       ctx.fill()
     }
 
+    for (const enemy of minimap.ai_enemies) {
+      if (!enemy.alive) continue
+      const sx = dx + enemy.map_x * scale + scale / 2
+      const sy = dy + (minimap.height - enemy.map_y - 1) * scale + scale / 2
+      ctx.fillStyle = "#fb923c"
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.max(2, scale * 0.4), 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = "#ea580c"
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
+
     const px = playerPosition.map_x
     const py = playerPosition.map_y
     if (px != null && py != null) {

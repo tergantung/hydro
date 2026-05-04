@@ -80,6 +80,14 @@ export type MinimapSnapshot = {
   wiring_tiles: number[]
   player_position: PlayerPosition
   other_players: RemotePlayerSnapshot[]
+  ai_enemies: AiEnemySnapshot[]
+}
+
+export type AiEnemySnapshot = {
+  ai_id: number
+  map_x: number
+  map_y: number
+  alive: boolean
 }
 
 export type ApiMessage = {
