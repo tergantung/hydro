@@ -1421,9 +1421,6 @@ impl BotSession {
                 self.apply_seed_growth_message(&message).await;
             }
             ids::PACKET_ID_DESTROY_BLOCK => {
-                if let (Ok(db_x), Ok(db_y)) = (message.get_i32("x"), message.get_i32("y")) {
-                    let _ = send_doc(&runtime.outbound_tx, protocol::make_harvest_action(db_x, db_y)).await;
-                }
                 self.apply_destroy_block_message(&message).await;
             }
             ids::PACKET_ID_NEW_COLLECTABLE | ids::PACKET_ID_COLLECTABLE_REQUEST => {

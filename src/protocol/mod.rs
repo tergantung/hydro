@@ -328,14 +328,6 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
     }
 }
 
-pub fn make_harvest_action(target_x: i32, target_y: i32) -> Document {
-    doc! {
-        "ID": "HA",
-        "x": target_x,
-        "y": target_y,
-    }
-}
-
 /// Move to a tile AND hit a block in the same tick.
 /// Sends: mP(a=7 HitMove) → mp(coords) → mP(a=7 HitMove) → PPA(mining sound) → HB(target)
 /// This makes the bot swing its pickaxe while walking — exactly how the
