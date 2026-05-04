@@ -3254,8 +3254,9 @@ async fn automine_loop(
 ) -> Result<(), String> {
     // Faster cadence than the old 1200ms — we no longer per-tick spam WeOwC,
     // so the rate-limit kick is no longer the constraint. BMod uses 220ms;
-    // 350ms keeps a safety margin while still feeling instant.
-    let mut tick = interval(Duration::from_millis(350));
+    // However, on high-ping connections (350ms+), ticks can clump together in the TCP stack
+    // and trigger server-side flood disconnects (EOF). Using 600ms as a safe margin.
+    let mut tick = interval(Duration::from_millis(600));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     // Equip a pickaxe once per session and re-equip after losing it. Without
@@ -3454,8 +3455,13 @@ async fn automine_loop(
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
                                     } else {
+                                        let block_below_index = ((player_y + 1) as u32 * world_width + player_x as u32) as usize;
+                                        let block_below = foreground.get(block_below_index).copied().unwrap_or(0);
+                                        let is_grounded = !crate::pathfinding::astar::is_walkable_tile(block_below);
+
                                         let anim = if is_moving_up { movement::ANIM_JUMP } 
                                                    else if is_moving_down { movement::ANIM_FALL } 
+                                                   else if !is_grounded { movement::ANIM_JUMP }
                                                    else { movement::ANIM_WALK };
 
                                         _logger.info("automine", Some(_session_id),
