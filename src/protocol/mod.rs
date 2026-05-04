@@ -219,6 +219,18 @@ pub fn make_join_world_special(world: &str, biome: i32) -> Document {
     }
 }
 
+/// TTjW retry variant for `OoIP { ER: "ServerFull" }` responses. The server
+/// uses the `Amt` field as a shard hint — each retry asks for a different
+/// instance until one has free slots.
+pub fn make_join_world_retry(world: &str, retry_count: i32) -> Document {
+    doc! {
+        "ID": ids::PACKET_ID_JOIN_WORLD,
+        "W": world.to_uppercase(),
+        "WB": 0,
+        "Amt": retry_count,
+    }
+}
+
 pub fn make_world_load_args(args: &[i32]) -> Document {
     doc! {
         "ID": ids::PACKET_ID_WORLD_LOAD_ARGS,
@@ -329,9 +341,11 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
 }
 
 /// Move to a tile AND hit a block in the same tick.
-/// Sends: mP(a=7 HitMove) → mp(coords) → mP(a=7 HitMove) → PPA(mining sound) → HB(target)
+/// Sends: mP(a=7 HitMove) → mp(coords) → mP(a=7 HitMove) → HB(target) → mP{}
 /// This makes the bot swing its pickaxe while walking — exactly how the
-/// real client looks when you hold movement + tap a block.
+/// real client looks when you hold movement + tap a block. The trailing
+/// empty `mP` is what closes the action; without it the server doesn't
+/// always register the swing.
 pub fn make_mine_move_and_hit(
     move_x: i32, move_y: i32,
     hit_x: i32, hit_y: i32,
@@ -343,13 +357,14 @@ pub fn make_mine_move_and_hit(
         make_map_point(move_x, move_y),
         make_movement_packet(world_x, world_y, movement::ANIM_HIT_MOVE, direction, false),
         make_hit_block(hit_x, hit_y),
+        make_empty_movement(),
     ]
 }
 
 /// Hit a block while standing still (adjacent mining).
-/// Sends: mP(a=6 Hit) → PPA(mining sound) → HB(target)
-/// The server expects to see the mining swing animation before the HB
-/// packet, otherwise it may silently drop the hit.
+/// Matches the Seraph capture exactly: `mP(a=6) + HB + mP{}`. The trailing
+/// empty `mP` closes the action; the server appears to drop or rate-limit
+/// HBs that aren't bookended by a swing-mP and a close-mP.
 pub fn make_mine_hit_stationary(
     player_x: i32, player_y: i32,
     hit_x: i32, hit_y: i32,
@@ -359,6 +374,7 @@ pub fn make_mine_hit_stationary(
     vec![
         make_movement_packet(world_x, world_y, movement::ANIM_HIT, direction, false),
         make_hit_block(hit_x, hit_y),
+        make_empty_movement(),
     ]
 }
 

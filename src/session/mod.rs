@@ -170,6 +170,7 @@ impl BotSession {
             current_world: None,
             pending_world: None,
             pending_world_is_instance: false,
+            serverfull_retries: 0,
             username: None,
             user_id: None,
             world: None,
@@ -1429,6 +1430,9 @@ impl BotSession {
             ids::PACKET_ID_AI_HIT_DAMAGE => {
                 self.track_ai_enemy(&message).await;
             }
+            ids::PACKET_ID_AI_SPAWN => {
+                self.track_ai_spawn(&message).await;
+            }
             ids::PACKET_ID_COLLECTABLE_REMOVE => {
                 self.remove_collectable(&message).await;
             }
@@ -1513,6 +1517,7 @@ impl BotSession {
                 {
                     let mut state = self.state.write().await;
                     state.world = Some(decoded_world.snapshot.clone());
+                    state.serverfull_retries = 0;
                     state.world_foreground_tiles = decoded_world.foreground_tiles;
                     state.world_background_tiles = decoded_world.background_tiles;
                     state.world_water_tiles = decoded_world.water_tiles;
@@ -1606,32 +1611,64 @@ impl BotSession {
                 }
             }
             ids::PACKET_ID_REDIRECT => {
+                const SERVERFULL_RETRY_LIMIT: u32 = 30;
+
                 let redirect_host = message.get_str("IP").unwrap_or_default().to_string();
-                let (fallback, is_instance) = {
-                    let state = self.state.read().await;
-                    (
-                        state
-                            .pending_world
-                            .clone()
-                            .or_else(|| state.current_world.clone()),
-                        state.pending_world_is_instance,
-                    )
+                let er = message.get_str("ER").ok().map(ToOwned::to_owned);
+                let is_serverfull = er.as_deref() == Some("ServerFull");
+
+                // Snapshot state and bump retry counter atomically.
+                let (fallback, is_instance, retry_count) = {
+                    let mut state = self.state.write().await;
+                    if is_serverfull {
+                        state.serverfull_retries = state.serverfull_retries.saturating_add(1);
+                    } else {
+                        // Normal redirect — reset the counter, this isn't a queue retry.
+                        state.serverfull_retries = 0;
+                    }
+                    let world = state
+                        .pending_world
+                        .clone()
+                        .or_else(|| state.current_world.clone());
+                    (world, state.pending_world_is_instance, state.serverfull_retries)
                 };
+
+                if is_serverfull && retry_count > SERVERFULL_RETRY_LIMIT {
+                    self.set_error(format!(
+                        "OoIP ServerFull: still full after {SERVERFULL_RETRY_LIMIT} retries"
+                    ))
+                    .await;
+                    return Ok(());
+                }
+
                 let world = message
                     .get_str("WN")
                     .ok()
                     .map(ToOwned::to_owned)
                     .or(fallback);
+
                 let _ = runtime.stop_tx.send(true);
                 self.update_status(SessionStatus::Redirecting, None).await;
                 let new_runtime = self.establish_connection(Some(redirect_host)).await?;
                 *runtime = new_runtime;
+
                 if let Some(world) = world {
                     {
                         let mut state = self.state.write().await;
                         state.pending_world = Some(world.clone());
                     }
-                    if is_instance {
+                    if is_serverfull {
+                        // Re-issue TTjW with Amt=retry_count to ask the matchmaker
+                        // for a different shard. establish_connection already replayed
+                        // the VChk + GPd handshake on the new socket.
+                        self.logger.info("session", Some(&self.id),
+                            format!("OoIP ServerFull retry #{retry_count} for {world}"));
+                        let _ = send_doc(
+                            &runtime.outbound_tx,
+                            protocol::make_join_world_retry(&world, retry_count as i32),
+                        )
+                        .await;
+                    } else if is_instance {
                         let _ = send_docs_exclusive(
                             &runtime.outbound_tx,
                             vec![
@@ -1966,6 +2003,53 @@ impl BotSession {
                 },
             );
         }
+    }
+
+    /// Server announces every AI enemy in the loaded world via a stream of
+    /// `AI` packets, each carrying a 37-byte binary `AId` blob (observed in
+    /// Seraph capture: `AI {ID="AI" AId=<binary:37B>} (x28)` for 28 enemies).
+    ///
+    /// The exact byte layout isn't decoded yet — we log the raw hex so we can
+    /// reverse the format from a real capture. The first 4 LE bytes are
+    /// almost certainly the i32 ai_id; the next 8 bytes are likely (x, y) as
+    /// i32+i32 by analogy with the `mp` (map-point) packet which is 8 bytes
+    /// of (x, y) i32 pair. The remaining 25 bytes likely encode enemy type,
+    /// HP, and animation state.
+    async fn track_ai_spawn(&self, message: &Document) {
+        let Some(blob) = protocol::binary_bytes(message.get("AId")) else {
+            self.logger.warn("session", Some(&self.id),
+                "AI packet missing AId binary field".to_string());
+            return;
+        };
+
+        if blob.len() < 12 {
+            self.logger.warn("session", Some(&self.id),
+                format!("AI packet AId too short: {} bytes", blob.len()));
+            return;
+        }
+
+        // Tentative parse: ai_id (4) | map_x (4) | map_y (4) | rest...
+        // If positions look bogus once we see real data we'll revise.
+        let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+        let map_x = i32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
+        let map_y = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
+
+        // Hex dump for offline RE — temporary until we trust the layout.
+        let hex = blob.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        self.logger.info("session", Some(&self.id),
+            format!("AI spawn ai_id={ai_id} guess_pos=({map_x},{map_y}) raw={hex}"));
+
+        let mut state = self.state.write().await;
+        state.ai_enemies.insert(
+            ai_id,
+            AiEnemyState {
+                ai_id,
+                map_x,
+                map_y,
+                last_seen: Instant::now(),
+                alive: true,
+            },
+        );
     }
 
     async fn apply_fishing_message(
@@ -2495,6 +2579,11 @@ struct SessionState {
     current_world: Option<String>,
     pending_world: Option<String>,
     pending_world_is_instance: bool,
+    /// Counter for OoIP "ServerFull" retries. The game server uses the `Amt`
+    /// field on the next TTjW to mean "try shard #N instead of the full one".
+    /// Reset on successful world entry (GET_WORLD_CONTENT) and when the user
+    /// issues a fresh JoinWorld command.
+    serverfull_retries: u32,
     username: Option<String>,
     user_id: Option<String>,
     world: Option<WorldSnapshot>,
@@ -3343,46 +3432,45 @@ async fn automine_loop(
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
 
                                     if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        // Block in our path — swing pickaxe while moving into it (a=7 HitMove)
+                                        // Block in our path — swing pickaxe while moving into it (a=7 HitMove).
+                                        // Sent as one exclusive batch so the swing+hit+close are atomic.
                                         let pkts = protocol::make_mine_move_and_hit(
-                                            player_x, player_y,  // stay at current pos
-                                            next_step.0, next_step.1,  // hit the block ahead
+                                            player_x, player_y,
+                                            next_step.0, next_step.1,
                                             dir,
                                         );
-                                        let _ = send_docs(outbound_tx, pkts).await;
+                                        let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
                                     } else {
-                                        // Path is clear — walk forward
+                                        // Path is clear — walk forward (3-packet movement, exclusive batch)
                                         let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, movement::ANIM_WALK, dir);
-                                        let _ = send_docs(outbound_tx, move_pkts).await;
+                                        let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
 
-                                        // Update local position
                                         {
                                             let mut st = state.write().await;
                                             st.player_position.map_x = Some(next_step.0 as f64);
                                             st.player_position.map_y = Some(next_step.1 as f64);
                                         }
 
-                                        // If we just arrived next to the target, hit it too
                                         if path.len() == 2 {
                                             let hit_pkts = protocol::make_mine_hit_stationary(
                                                 next_step.0, next_step.1,
                                                 target_x, target_y,
                                                 dir,
                                             );
-                                            let _ = send_docs(outbound_tx, hit_pkts).await;
+                                            let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
                                             hit_this_tick = Some((target_x, target_y));
                                         }
                                     }
                                 } else {
-                                    // Already on top of target — stationary hit (a=6 Hit)
+                                    // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
                                     let hit_pkts = protocol::make_mine_hit_stationary(
                                         player_x, player_y,
                                         target_x, target_y,
                                         dir,
                                     );
-                                    let _ = send_docs(outbound_tx, hit_pkts).await;
+                                    let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
                                     hit_this_tick = Some((target_x, target_y));
                                 }
                             }
@@ -5354,6 +5442,7 @@ mod tests {
             current_world: Some("TEST".to_string()),
             pending_world: None,
             pending_world_is_instance: false,
+            serverfull_retries: 0,
             username: None,
             user_id: None,
             world: Some(WorldSnapshot {

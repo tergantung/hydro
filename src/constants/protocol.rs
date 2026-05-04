@@ -28,6 +28,7 @@ pub const PACKET_ID_SET_BLOCK: &str = "SB";
 pub const PACKET_ID_HIT_BLOCK: &str = "HB";
 pub const PACKET_ID_HIT_AI_ENEMY: &str = "HAI";
 pub const PACKET_ID_AI_HIT_DAMAGE: &str = "AIHD";
+pub const PACKET_ID_AI_SPAWN: &str = "AI";
 pub const PACKET_ID_HIT_BLOCK_WATER: &str = "HBW";
 pub const PACKET_ID_HIT_BLOCK_BG: &str = "HBB";
 pub const PACKET_ID_DESTROY_BLOCK: &str = "DB";
