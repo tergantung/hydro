@@ -358,6 +358,7 @@ pub fn make_mine_move_and_hit(
         make_map_point(move_x, move_y),
         make_movement_packet(world_x, world_y, anim, direction, false),
         make_hit_block(hit_x, hit_y),
+        make_empty_movement(),
     ]
 }
 
@@ -374,6 +375,7 @@ pub fn make_mine_hit_stationary(
     vec![
         make_movement_packet(world_x, world_y, movement::ANIM_HIT, direction, false),
         make_hit_block(hit_x, hit_y),
+        make_empty_movement(),
     ]
 }
 
