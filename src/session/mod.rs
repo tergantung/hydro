@@ -2064,19 +2064,27 @@ impl BotSession {
             return;
         };
 
-        if blob.len() < 26 {
-            self.logger.warn("session", Some(&self.id),
-                format!("AI packet AId too short for coordinates: {} bytes", blob.len()));
+        if blob.len() != 37 {
+            // True AI spawns are exactly 37 bytes long (as observed in captures).
+            // Any other length means this is a different AI event type.
             return;
         }
 
+        // Byte 12: Event Type
+        if blob[12] != 4 {
+            return;
+        }
+
+        // Confirmed offsets from packet analysis:
+        // Byte 0-3: ai_id
+        // Byte 18-21: map_x (i32)
+        // Byte 22-25: map_y (i32)
         let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
         let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
         let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
 
-        let hex = blob.iter().map(|b| format!("{b:02x}")).collect::<String>();
         self.logger.info("session", Some(&self.id),
-            format!("AI spawn ID={} POS=({},{}) RAW={}", ai_id, map_x, map_y, hex));
+            format!("AI spawn ID={} at ({},{})", ai_id, map_x, map_y));
 
         let mut state = self.state.write().await;
         state.ai_enemies.insert(
@@ -2455,11 +2463,13 @@ impl SchedulerState {
                 }
             }
             SchedulerPhase::WorldIdle => {
-                batch.push(protocol::make_empty_movement());
                 batch.extend(after_generated);
                 if self.st_due {
                     batch.push(protocol::make_st());
                     self.st_due = false;
+                }
+                if batch.is_empty() {
+                    return None;
                 }
             }
             SchedulerPhase::WorldMoving => {
@@ -3456,7 +3466,8 @@ async fn automine_loop(
                     for e in st.ai_enemies.values() {
                         if e.alive && e.map_x != 0 {
                             let dist = (e.map_x - player_x).abs() + (e.map_y - player_y).abs();
-                            if dist <= 3 && dist < min_dist {
+                            // Maximum valid melee reach is 2 blocks.
+                            if dist <= 2 && dist < min_dist {
                                 min_dist = dist;
                                 closest_enemy = Some((e.map_x, e.map_y, e.ai_id));
                             }
@@ -3465,12 +3476,8 @@ async fn automine_loop(
                 }
 
                 if let Some((ex, ey, ai_id)) = closest_enemy {
-                    _logger.info("automine", Some(&_session_id), format!("COMBAT: Hitting single closest AI enemy ID={} at ({},{})", ai_id, ex, ey));
+                    _logger.info("automine", Some(&_session_id), format!("COMBAT: Hitting single closest AI enemy ID={} at ({},{}) from player pos ({},{})", ai_id, ex, ey, player_x, player_y));
                     let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(ex, ey, ai_id)).await;
-                    
-                    // Reset timer and skip mining this tick to enforce hit delay (matches MineBot.cs return)
-                    tokio::time::sleep(Duration::from_millis(220)).await;
-                    continue; 
                 }
 
                 // Track tiles we attempt to break this tick so we can bump their counters
