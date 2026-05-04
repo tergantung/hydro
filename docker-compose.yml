@@ -1,0 +1,18 @@
+services:
+  moonlight:
+    build: .
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    volumes:
+      - moonlight-data:/app/data
+    environment:
+      - MOONLIGHT_TRACE=0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  moonlight-data:

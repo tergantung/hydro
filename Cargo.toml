@@ -1,0 +1,27 @@
+[package]
+name = "Moonlight"
+version = "0.1.0"
+edition = "2024"
+authors = ["Cendy"]
+
+[dependencies]
+bson = { version = "3.1.0", features = ["serde_json-1"] }
+rand = "0.10.0"
+tokio = { version = "1.51.0", features = ["full"] }
+ureq = { version = "3.3.0", features = ["json"] }
+zstd = "0.13.3"
+axum = { version = "0.8.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mlua = { version = "0.11.6", features = ["luajit", "vendored"] }
+argon2 = "0.5.3"
+rand_core = { version = "0.6", features = ["getrandom"] }
+dashmap = "6.1"
+parking_lot = "0.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
