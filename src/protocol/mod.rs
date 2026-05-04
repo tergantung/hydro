@@ -347,16 +347,18 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
 /// empty `mP` is what closes the action; without it the server doesn't
 /// always register the swing.
 pub fn make_mine_move_and_hit(
+    player_x: i32, player_y: i32,
     move_x: i32, move_y: i32,
     hit_x: i32, hit_y: i32,
     direction: i32,
     anim: i32,
 ) -> Vec<Document> {
-    let (world_x, world_y) = map_to_world(move_x as f64, move_y as f64);
+    let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
+    let (new_world_x, new_world_y) = map_to_world(move_x as f64, move_y as f64);
     vec![
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(move_x, move_y),
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(new_world_x, new_world_y, anim, direction, false),
         make_hit_block(hit_x, hit_y),
         make_empty_movement(),
     ]
@@ -576,12 +578,13 @@ pub fn make_movement_packet(
 ///
 /// The `_anim` parameter is kept for source compatibility but ignored —
 /// the protocol fixes the animation values per packet.
-pub fn make_move_to_map_point(map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
-    let (world_x, world_y) = map_to_world(map_x as f64, map_y as f64);
+pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
+    let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
+    let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
     vec![
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(new_world_x, new_world_y, anim, direction, false),
     ]
 }
 

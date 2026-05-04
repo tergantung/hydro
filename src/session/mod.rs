@@ -171,6 +171,8 @@ impl BotSession {
             pending_world: None,
             pending_world_is_instance: false,
             serverfull_retries: 0,
+            last_action_hint: None,
+            last_action_at: None,
             username: None,
             user_id: None,
             world: None,
@@ -1707,8 +1709,43 @@ impl BotSession {
             }
             ids::PACKET_ID_KICK_ERROR => {
                 let error_code = message.get_i32("ER").unwrap_or_default();
-                self.set_error(format!("kicked by server (code {error_code})"))
-                    .await;
+                let body = protocol::log_message(&message);
+
+                // Suspected code → reason mapping. Filled in over time as we
+                // observe (action that triggered) → (ER code) pairs. The game
+                // DLL has anti-cheat tags like "SpeedHackDetected" but no
+                // exposed numeric enum, so these are educated guesses.
+                let reason_hint = match error_code {
+                    1 => "anim/physics mismatch (likely a=FALL on flat-y or position outside reachable delta)",
+                    2 => "rate limit / flood (too many actions per second)",
+                    3 => "invalid wear (equipping a block id you don't own)",
+                    4 => "invalid HB target (mining out of range or non-mineable)",
+                    7 => "speed-hack / movement violation",
+                    _ => "unknown — collect more samples to map",
+                };
+
+                let (last_action, action_age, pos) = {
+                    let st = self.state.read().await;
+                    let age = st.last_action_at.map(|t| t.elapsed());
+                    (
+                        st.last_action_hint.clone(),
+                        age,
+                        st.player_position.clone(),
+                    )
+                };
+
+                let action_str = match (last_action.as_deref(), action_age) {
+                    (Some(a), Some(age)) => format!("{a} ({}ms ago)", age.as_millis()),
+                    _ => "no recent action recorded".to_string(),
+                };
+
+                self.set_error(format!(
+                    "kicked by server: code={error_code} hint=\"{reason_hint}\" \
+                     last_action={action_str} pos=({:?},{:?}) world=({:?},{:?}) \
+                     full_packet={body}",
+                    pos.map_x, pos.map_y, pos.world_x, pos.world_y,
+                ))
+                .await;
             }
             _ => {}
         }
@@ -2070,21 +2107,39 @@ impl BotSession {
             return;
         }
 
-        // Byte 12: Event Type
+        // Byte 12: Event Type — must be 4 (spawn).
         if blob[12] != 4 {
             return;
         }
 
+        // Byte 14: Entity sub-type. 0x1c (28) is the static spawn point format
+        // where bytes 18-25 are the (x, y) i32 pair. Other values (e.g. 0x09)
+        // are different entity kinds whose payload uses different field offsets.
+        // Reading bytes 18-25 on those gives garbage coords like (-1811939316,
+        // -369098673) which then poison combat targeting via i32 wraparound.
+        if blob[14] != 0x1c {
+            return;
+        }
+
         // Confirmed offsets from packet analysis:
-        // Byte 0-3: ai_id
-        // Byte 18-21: map_x (i32)
-        // Byte 22-25: map_y (i32)
+        // Byte 0-3:   ai_id (i32 LE)
+        // Byte 18-21: map_x (i32 LE)
+        // Byte 22-25: map_y (i32 LE)
         let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
         let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
         let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
 
+        // Sanity bound: PixelWorlds maps top out around 200x200. Anything outside
+        // [0, 1024] is corrupt — refuse to register it. This is belt-and-braces
+        // alongside the byte 14 filter above.
+        if !(0..=1024).contains(&map_x) || !(0..=1024).contains(&map_y) {
+            self.logger.warn("session", Some(&self.id),
+                format!("rejected AI spawn ID={ai_id} with out-of-range coords ({map_x},{map_y})"));
+            return;
+        }
+
         self.logger.info("session", Some(&self.id),
-            format!("AI spawn ID={} at ({},{})", ai_id, map_x, map_y));
+            format!("AI spawn ID={ai_id} at ({map_x},{map_y})"));
 
         let mut state = self.state.write().await;
         state.ai_enemies.insert(
@@ -2633,6 +2688,11 @@ struct SessionState {
     /// Reset on successful world entry (GET_WORLD_CONTENT) and when the user
     /// issues a fresh JoinWorld command.
     serverfull_retries: u32,
+    /// Last "interesting" outbound action description, kept so we can correlate
+    /// KErr kicks with the bot action that triggered them. Set on every move /
+    /// hit / HAI by the automine loop.
+    last_action_hint: Option<String>,
+    last_action_at: Option<Instant>,
     username: Option<String>,
     user_id: Option<String>,
     world: Option<WorldSnapshot>,
@@ -3294,6 +3354,14 @@ fn find_best_pickaxe(inventory: &[InventoryEntry]) -> Option<u16> {
     })
 }
 
+/// Stamp the most recent bot action onto session state so the KErr handler can
+/// later say "you were just doing X when you got kicked".
+async fn record_action(state: &Arc<RwLock<SessionState>>, hint: String) {
+    let mut st = state.write().await;
+    st.last_action_hint = Some(hint);
+    st.last_action_at = Some(Instant::now());
+}
+
 async fn automine_loop(
     _session_id: &str,
     _logger: &Logger,
@@ -3393,7 +3461,7 @@ async fn automine_loop(
                     // World data not loaded yet, send a movement packet to stay alive
                     if is_in_mine {
 
-                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
+                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                     }
                     continue;
@@ -3458,19 +3526,25 @@ async fn automine_loop(
 
                 // Combat Stance: Single-target priority combat (matches MineBot.cs logic)
                 // Select only the single closest enemy to avoid "Machine Gun" kicks.
+                // Distance is computed via i64 widening so a corrupted enemy entry
+                // with massive negative coords can't wrap into a tiny i32 and slip
+                // past the `dist <= 2` gate.
                 let mut closest_enemy: Option<(i32, i32, i32)> = None;
-                let mut min_dist = 999;
+                let mut min_dist: i64 = 999;
 
                 {
                     let st = state.read().await;
                     for e in st.ai_enemies.values() {
-                        if e.alive && e.map_x != 0 {
-                            let dist = (e.map_x - player_x).abs() + (e.map_y - player_y).abs();
-                            // Maximum valid melee reach is 2 blocks.
-                            if dist <= 2 && dist < min_dist {
-                                min_dist = dist;
-                                closest_enemy = Some((e.map_x, e.map_y, e.ai_id));
-                            }
+                        if !(e.alive && e.map_x != 0) {
+                            continue;
+                        }
+                        let dx = (e.map_x as i64) - (player_x as i64);
+                        let dy = (e.map_y as i64) - (player_y as i64);
+                        let dist = dx.abs() + dy.abs();
+                        // Maximum valid melee reach is 2 blocks.
+                        if dist <= 2 && dist < min_dist {
+                            min_dist = dist;
+                            closest_enemy = Some((e.map_x, e.map_y, e.ai_id));
                         }
                     }
                 }
@@ -3478,16 +3552,49 @@ async fn automine_loop(
                 if let Some((ex, ey, ai_id)) = closest_enemy {
                     _logger.info("automine", Some(&_session_id), format!("COMBAT: Hitting single closest AI enemy ID={} at ({},{}) from player pos ({},{})", ai_id, ex, ey, player_x, player_y));
                     let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(ex, ey, ai_id)).await;
+                    record_action(state, format!("HAI ai_id={ai_id} at=({ex},{ey})")).await;
                 }
 
                 // Track tiles we attempt to break this tick so we can bump their counters
                 // and log dead-end transitions outside the pathfinding closure.
                 let mut hit_this_tick: Option<(i32, i32)> = None;
 
-                // Pathfinding & Breaking Blocks (uses dead-end-masked foreground)
-                match automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground) {
-                    Some((target_x, target_y)) => {
-                        match automine::get_path_to_target(player_x, player_y, target_x, target_y, &masked_foreground, world_width, world_height) {
+                // Check for ANY dropped collectables (gems, nuggets) across the entire world.
+                // We sort by distance and ensure they are actually reachable to prevent infinite pathing loops.
+                let mut best_collectable: Option<(i32, i32, i32, Vec<(i32, i32)>)> = None;
+                
+                {
+                    let st = state.read().await;
+                    let mut all_cols: Vec<_> = st.collectables.values().map(|c| {
+                        let (cx, cy) = protocol::world_to_map(c.pos_x, c.pos_y);
+                        let cx = cx as i32;
+                        let cy = cy as i32;
+                        let dist = (cx - player_x).abs() + (cy - player_y).abs();
+                        (cx, cy, c.collectable_id, dist)
+                    }).collect();
+                    
+                    // Sort closest to furthest
+                    all_cols.sort_by_key(|k| k.3);
+
+                    for (cx, cy, cid, _) in all_cols {
+                        if let Some(path) = automine::get_path_to_target(player_x, player_y, cx, cy, &masked_foreground, world_width, world_height) {
+                            best_collectable = Some((cx, cy, cid, path));
+                            break;
+                        }
+                    }
+                }
+
+                // Pathfinding target: prioritize reachable collectables, fallback to mineable blocks
+                let target = best_collectable.map(|(cx, cy, cid, path)| (cx, cy, true, Some(cid), Some(path)))
+                    .or_else(|| {
+                        automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground)
+                            .map(|(tx, ty)| (tx, ty, false, None, None))
+                    });
+
+                match target {
+                    Some((target_x, target_y, is_collectable, opt_cid, opt_path)) => {
+                        let resolved_path = opt_path.or_else(|| automine::get_path_to_target(player_x, player_y, target_x, target_y, &masked_foreground, world_width, world_height));
+                        match resolved_path {
                             Some(path) => {
                                 if path.len() > 1 {
                                     let next_step = path[1];
@@ -3496,40 +3603,47 @@ async fn automine_loop(
 
                                     // Direction: face toward the target
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
-                                    
-                                    // Determine the correct animation based on vertical movement
+
+                                    // Animation must match the physics the server can verify from
+                                    // before/after positions. Anything else triggers KErr code 1
+                                    // ("animation/physics mismatch"). Smaller map_y = higher visually
+                                    // (Unity-style top-down map coords).
                                     let is_moving_up = next_step.1 < player_y;
                                     let is_moving_down = next_step.1 > player_y;
-                                    
-                                    if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        let anim = if is_moving_up { movement::ANIM_FALL } 
-                                                   else if is_moving_down { movement::ANIM_FALL } 
-                                                   else { movement::ANIM_HIT_MOVE };
 
-                                        // Block in our path — swing pickaxe while moving into it
-                                        // Sent as one exclusive batch so the swing+hit+close are atomic.
+                                    if !crate::pathfinding::astar::is_walkable_tile(next_block) {
+                                        // Mining a block in the path. Use HIT_MOVE for horizontal
+                                        // strikes. For vertical, the bot is jumping/falling INTO the
+                                        // block — but we don't have a "hit-while-jumping" anim, so
+                                        // fall back to HIT_MOVE which the server accepts during a
+                                        // 1-tile vertical breach.
+                                        let anim = movement::ANIM_HIT_MOVE;
+
                                         _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
+                                            player_x, player_y, // Do not move INTO the solid block
                                             next_step.0, next_step.1,
                                             dir,
                                             anim,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
+                                        record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
                                     } else {
-                                        let block_below_index = ((player_y + 1) as u32 * world_width + player_x as u32) as usize;
-                                        let block_below = foreground.get(block_below_index).copied().unwrap_or(0);
-                                        let is_grounded = !crate::pathfinding::astar::is_walkable_tile(block_below);
+                                        // Pure movement: pick the anim that physically describes
+                                        // this single-tile transition.
+                                        let anim = if is_moving_up {
+                                            movement::ANIM_JUMP
+                                        } else if is_moving_down {
+                                            movement::ANIM_FALL
+                                        } else {
+                                            movement::ANIM_WALK
+                                        };
 
-                                        let anim = if is_moving_up { movement::ANIM_FALL } 
-                                                   else if is_moving_down { movement::ANIM_FALL } 
-                                                   else if !is_grounded { movement::ANIM_FALL }
-                                                   else { movement::ANIM_WALK };
-
-                                        // Path is clear — walk forward (3-packet movement, exclusive batch)
-                                        let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, anim, dir);
+                                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
+                                        record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={anim}", next_step.0, next_step.1)).await;
 
                                         {
                                             let mut st = state.write().await;
@@ -3538,26 +3652,40 @@ async fn automine_loop(
                                         }
 
                                         if path.len() == 2 {
-                                            let hit_pkts = protocol::make_mine_hit_stationary(
-                                                next_step.0, next_step.1,
-                                                target_x, target_y,
-                                                dir,
-                                            );
-                                            let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
-                                            hit_this_tick = Some((target_x, target_y));
+                                            if is_collectable {
+                                                let cid = opt_cid.unwrap();
+                                                let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                                                record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
+                                            } else {
+                                                let hit_pkts = protocol::make_mine_hit_stationary(
+                                                    next_step.0, next_step.1,
+                                                    target_x, target_y,
+                                                    dir,
+                                                );
+                                                let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                                record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
+                                                hit_this_tick = Some((target_x, target_y));
+                                            }
                                         }
                                     }
                                 } else {
-                                    // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
-                                    let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
-                                    
-                                    let hit_pkts = protocol::make_mine_hit_stationary(
-                                        player_x, player_y,
-                                        target_x, target_y,
-                                        dir,
-                                    );
-                                    let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
-                                    hit_this_tick = Some((target_x, target_y));
+                                    if is_collectable {
+                                        let cid = opt_cid.unwrap();
+                                        let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                                        record_action(state, format!("request collectable cid={cid} on tile")).await;
+                                    } else {
+                                        // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
+                                        let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+
+                                        let hit_pkts = protocol::make_mine_hit_stationary(
+                                            player_x, player_y,
+                                            target_x, target_y,
+                                            dir,
+                                        );
+                                        let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                        record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
+                                        hit_this_tick = Some((target_x, target_y));
+                                    }
                                 }
                             }
                             None => {
@@ -5525,6 +5653,8 @@ mod tests {
             pending_world: None,
             pending_world_is_instance: false,
             serverfull_retries: 0,
+            last_action_hint: None,
+            last_action_at: None,
             username: None,
             user_id: None,
             world: Some(WorldSnapshot {
