@@ -1583,25 +1583,26 @@ impl BotSession {
                         send_docs_exclusive(&runtime.outbound_tx, protocol::make_ready_to_play())
                             .await;
 
-                    sleep(Duration::from_millis(1000)).await;
-
-                    if let Some(world) = self.state.read().await.world.clone() {
-                        if let (Some(map_x), Some(map_y), Some(world_x), Some(world_y)) = (
-                            world.spawn_map_x,
-                            world.spawn_map_y,
-                            world.spawn_world_x,
-                            world.spawn_world_y,
-                        ) {
-                            let _ = send_docs_exclusive(
-                                &runtime.outbound_tx,
-                                protocol::make_spawn_packets(
-                                map_x.round() as i32,
-                                map_y.round() as i32,
-                                world_x,
-                                world_y,
-                                ),
-                            )
-                            .await;
+                    let is_in_mine = self.state.read().await.current_world.as_deref().map(|w| w.to_uppercase() == "MINEWORLD").unwrap_or(false);
+                    if !is_in_mine {
+                        if let Some(world) = self.state.read().await.world.clone() {
+                            if let (Some(map_x), Some(map_y), Some(world_x), Some(world_y)) = (
+                                world.spawn_map_x,
+                                world.spawn_map_y,
+                                world.spawn_world_x,
+                                world.spawn_world_y,
+                            ) {
+                                let _ = send_docs_exclusive(
+                                    &runtime.outbound_tx,
+                                    protocol::make_spawn_packets(
+                                        map_x.round() as i32,
+                                        map_y.round() as i32,
+                                        world_x,
+                                        world_y,
+                                    ),
+                                )
+                                .await;
+                            }
                         }
                     }
 
@@ -2064,57 +2065,23 @@ impl BotSession {
             return;
         };
 
-        if blob.len() < 12 {
+        if blob.len() < 26 {
             self.logger.warn("session", Some(&self.id),
                 format!("AI packet AId too short: {} bytes", blob.len()));
             return;
         }
 
+        // Confirmed offsets from packet analysis:
+        // Byte 0-3: ai_id
+        // Byte 18-21: map_x (i32)
+        // Byte 22-25: map_y (i32)
         let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
-        let mut map_x = 0;
-        let mut map_y = 0;
-
-        // Try to find valid float coordinates
-        let mut found_float = false;
-        for offset in (0..blob.len().saturating_sub(4)).step_by(4) {
-            let val = f32::from_le_bytes([blob[offset], blob[offset+1], blob[offset+2], blob[offset+3]]);
-            if val > 0.0 && val < 500.0 && (val * 32.0).fract() < 0.1 {
-                // looks like a valid world coordinate!
-                if !found_float {
-                    map_x = (val / 0.32) as i32; // Assuming world_x / TILE_WIDTH
-                    found_float = true;
-                } else if found_float {
-                    map_y = (val / 0.32) as i32;
-                    break;
-                }
-            }
-        }
-
-        if !found_float {
-            // Try to find valid int coordinates
-            for offset in (4..blob.len().saturating_sub(4)).step_by(4) {
-                let val = i32::from_le_bytes([blob[offset], blob[offset+1], blob[offset+2], blob[offset+3]]);
-                if val > 0 && val < 200 {
-                    if map_x == 0 {
-                        map_x = val;
-                    } else if map_y == 0 {
-                        map_y = val;
-                        break;
-                    }
-                }
-            }
-        }
+        let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
+        let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
 
         let hex = blob.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let mut debug_vals = String::new();
-        for i in (0..blob.len().saturating_sub(4)).step_by(2) {
-            let u16_val = u16::from_le_bytes([blob[i], blob[i+1]]);
-            let i32_val = if i + 3 < blob.len() { i32::from_le_bytes([blob[i], blob[i+1], blob[i+2], blob[i+3]]) } else { 0 };
-            debug_vals.push_str(&format!("{}:[u16={},i32={}] ", i, u16_val, i32_val));
-        }
-
         self.logger.info("session", Some(&self.id),
-            format!("AI spawn ID={} POS=({},{}) RAW={} DEBUG={}", ai_id, map_x, map_y, hex, debug_vals));
+            format!("AI spawn ID={} at ({},{}) raw={}", ai_id, map_x, map_y, hex));
 
         let mut state = self.state.write().await;
         state.ai_enemies.insert(
@@ -2475,7 +2442,7 @@ impl SchedulerState {
                     self.st_due = false;
                 }
                 if batch.is_empty() {
-                    return Some(Vec::new());
+                    return None;
                 }
             }
             SchedulerPhase::MenuStBurst => {
@@ -2493,11 +2460,13 @@ impl SchedulerState {
                 }
             }
             SchedulerPhase::WorldIdle => {
-                batch.push(protocol::make_empty_movement());
                 batch.extend(after_generated);
                 if self.st_due {
                     batch.push(protocol::make_st());
                     self.st_due = false;
+                }
+                if batch.is_empty() {
+                    return None;
                 }
             }
             SchedulerPhase::WorldMoving => {
@@ -3484,14 +3453,35 @@ async fn automine_loop(
                 // server). An external bot that never simulates self-damage is implicitly invincible,
                 // so we no longer wear damage/fighting potions.
 
-                // Auto-hit AI enemies in melee range. 
-                // CRITICAL: Only hit if we have valid non-zero coordinates to avoid reach-hack kicks.
-                for (ex, ey, ai_id) in &nearby_enemies {
-                    if *ex != 0 && *ey != 0 {
-                        _logger.info("automine", Some(&_session_id), format!("Hitting AI enemy ID={} at ({},{})", ai_id, ex, ey));
-                        let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(*ex, *ey, *ai_id)).await;
+
+                /*
+                // Combat Stance: Single-target priority combat (matches MineBot.cs logic)
+                // Select only the single closest enemy to avoid "Machine Gun" kicks.
+                let mut closest_enemy: Option<(i32, i32, i32)> = None;
+                let mut min_dist = 999;
+
+                {
+                    let st = state.read().await;
+                    for e in st.ai_enemies.values() {
+                        if e.alive && e.map_x != 0 {
+                            let dist = (e.map_x - player_x).abs() + (e.map_y - player_y).abs();
+                            if dist <= 3 && dist < min_dist {
+                                min_dist = dist;
+                                closest_enemy = Some((e.map_x, e.map_y, e.ai_id));
+                            }
+                        }
                     }
                 }
+
+                if let Some((ex, ey, ai_id)) = closest_enemy {
+                    _logger.info("automine", Some(&_session_id), format!("COMBAT: Hitting single closest AI enemy ID={} at ({},{})", ai_id, ex, ey));
+                    let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(ex, ey, ai_id)).await;
+                    
+                    // Reset timer and skip mining this tick to enforce hit delay (matches MineBot.cs return)
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    continue; 
+                }
+                */
 
                 // Track tiles we attempt to break this tick so we can bump their counters
                 // and log dead-end transitions outside the pathfinding closure.
@@ -3521,6 +3511,11 @@ async fn automine_loop(
 
                                         // Block in our path — swing pickaxe while moving into it
                                         // Sent as one exclusive batch so the swing+hit+close are atomic.
+                                        let log_msg = format!("MINE block at ({},{})\n", next_step.0, next_step.1);
+                                        let _ = tokio::fs::OpenOptions::new().append(true).open("ai_debug.log").await.map(|mut f| {
+                                            use tokio::io::AsyncWriteExt;
+                                            let _ = f.write_all(log_msg.as_bytes());
+                                        });
                                         _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
