@@ -3440,6 +3440,9 @@ async fn automine_loop(
                                                    else if is_moving_down { movement::ANIM_FALL } 
                                                    else { movement::ANIM_HIT_MOVE };
 
+                                        _logger.info("automine", Some(_session_id),
+                                            format!("path-hit: swinging at block ({},{}) from pos ({},{}) with anim={}", next_step.0, next_step.1, player_x, player_y, anim));
+
                                         // Block in our path — swing pickaxe while moving into it
                                         // Sent as one exclusive batch so the swing+hit+close are atomic.
                                         let pkts = protocol::make_mine_move_and_hit(
@@ -3455,6 +3458,9 @@ async fn automine_loop(
                                                    else if is_moving_down { movement::ANIM_FALL } 
                                                    else { movement::ANIM_WALK };
 
+                                        _logger.info("automine", Some(_session_id),
+                                            format!("path-move: walking to empty tile ({},{}) from pos ({},{}) with anim={}", next_step.0, next_step.1, player_x, player_y, anim));
+
                                         // Path is clear — walk forward (3-packet movement, exclusive batch)
                                         let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
@@ -3466,6 +3472,9 @@ async fn automine_loop(
                                         }
 
                                         if path.len() == 2 {
+                                            _logger.info("automine", Some(_session_id),
+                                                format!("adjacent-hit: mining block ({},{}) from pos ({},{}) after walking", target_x, target_y, next_step.0, next_step.1));
+
                                             let hit_pkts = protocol::make_mine_hit_stationary(
                                                 next_step.0, next_step.1,
                                                 target_x, target_y,
@@ -3478,6 +3487,10 @@ async fn automine_loop(
                                 } else {
                                     // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+                                    
+                                    _logger.info("automine", Some(_session_id),
+                                        format!("on-top-hit: mining block ({},{}) from pos ({},{}) (already adjacent)", target_x, target_y, player_x, player_y));
+
                                     let hit_pkts = protocol::make_mine_hit_stationary(
                                         player_x, player_y,
                                         target_x, target_y,
@@ -3495,7 +3508,7 @@ async fn automine_loop(
                         }
                     }
                     None => {
-                        _logger.info("automine", Some(_session_id), "no targets — mine cleared or all dead-ends");
+                        _logger.info("automine", Some(_session_id), "no targets — mine cleared or all dead-ends. sending idle mP.");
                         // Send an empty movement packet so the server doesn't drop the connection for AFK
                         let _ = send_docs_exclusive(outbound_tx, vec![protocol::make_empty_movement()]).await;
                     }
