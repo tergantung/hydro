@@ -3430,20 +3430,33 @@ async fn automine_loop(
 
                                     // Direction: face toward the target
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
-
+                                    
+                                    // Determine the correct animation based on vertical movement
+                                    let is_moving_up = next_step.1 < player_y;
+                                    let is_moving_down = next_step.1 > player_y;
+                                    
                                     if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        // Block in our path — swing pickaxe while moving into it (a=7 HitMove).
+                                        let anim = if is_moving_up { movement::ANIM_JUMP } 
+                                                   else if is_moving_down { movement::ANIM_FALL } 
+                                                   else { movement::ANIM_HIT_MOVE };
+
+                                        // Block in our path — swing pickaxe while moving into it
                                         // Sent as one exclusive batch so the swing+hit+close are atomic.
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
                                             next_step.0, next_step.1,
                                             dir,
+                                            anim,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
                                     } else {
+                                        let anim = if is_moving_up { movement::ANIM_JUMP } 
+                                                   else if is_moving_down { movement::ANIM_FALL } 
+                                                   else { movement::ANIM_WALK };
+
                                         // Path is clear — walk forward (3-packet movement, exclusive batch)
-                                        let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, movement::ANIM_WALK, dir);
+                                        let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
 
                                         {
