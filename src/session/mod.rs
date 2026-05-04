@@ -3496,6 +3496,8 @@ async fn automine_loop(
                     }
                     None => {
                         _logger.info("automine", Some(_session_id), "no targets — mine cleared or all dead-ends");
+                        // Send an empty movement packet so the server doesn't drop the connection for AFK
+                        let _ = send_docs_exclusive(outbound_tx, vec![protocol::make_empty_movement()]).await;
                     }
                 }
 
