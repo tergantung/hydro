@@ -3437,7 +3437,7 @@ async fn automine_loop(
                                     let is_moving_down = next_step.1 > player_y;
                                     
                                     if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        let anim = if is_moving_up { movement::ANIM_JUMP } 
+                                        let anim = if is_moving_up { movement::ANIM_FALL } 
                                                    else if is_moving_down { movement::ANIM_FALL } 
                                                    else { movement::ANIM_HIT_MOVE };
 
@@ -3459,9 +3459,9 @@ async fn automine_loop(
                                         let block_below = foreground.get(block_below_index).copied().unwrap_or(0);
                                         let is_grounded = !crate::pathfinding::astar::is_walkable_tile(block_below);
 
-                                        let anim = if is_moving_up { movement::ANIM_JUMP } 
+                                        let anim = if is_moving_up { movement::ANIM_FALL } 
                                                    else if is_moving_down { movement::ANIM_FALL } 
-                                                   else if !is_grounded { movement::ANIM_JUMP }
+                                                   else if !is_grounded { movement::ANIM_FALL }
                                                    else { movement::ANIM_WALK };
 
                                         _logger.info("automine", Some(_session_id),
