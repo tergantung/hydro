@@ -326,6 +326,15 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
     }
 }
 
+pub fn make_hit_ai_enemy(map_x: i32, map_y: i32, ai_id: i32) -> Document {
+    doc! {
+        "ID": ids::PACKET_ID_HIT_AI_ENEMY,
+        "x": map_x,
+        "y": map_y,
+        "AIid": ai_id,
+    }
+}
+
 pub fn make_hit_block_water(map_x: i32, map_y: i32) -> Document {
     doc! {
         "ID": ids::PACKET_ID_HIT_BLOCK_WATER,

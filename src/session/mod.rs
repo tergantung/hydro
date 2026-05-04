@@ -187,6 +187,7 @@ impl BotSession {
             },
             current_direction: movement::DIR_RIGHT,
             other_players: HashMap::new(),
+            ai_enemies: HashMap::new(),
             inventory: Vec::new(),
             collectables: HashMap::new(),
             last_error: None,
@@ -852,6 +853,7 @@ impl BotSession {
                             state.pending_world_is_instance = instance;
                             state.status = SessionStatus::JoiningWorld;
                             state.other_players.clear();
+                            state.ai_enemies.clear();
                         }
                         self.publish_snapshot().await;
                         if let Some(active) = &runtime {
@@ -1424,6 +1426,9 @@ impl BotSession {
             ids::PACKET_ID_NEW_COLLECTABLE | ids::PACKET_ID_COLLECTABLE_REQUEST => {
                 self.track_collectable(&message).await;
             }
+            ids::PACKET_ID_AI_HIT_DAMAGE => {
+                self.track_ai_enemy(&message).await;
+            }
             ids::PACKET_ID_COLLECTABLE_REMOVE => {
                 self.remove_collectable(&message).await;
             }
@@ -1484,6 +1489,7 @@ impl BotSession {
                         state.current_world = world.clone();
                         state.status = SessionStatus::LoadingWorld;
                         state.other_players.clear();
+                            state.ai_enemies.clear();
                     }
                     self.publish_snapshot().await;
                     if let Some(world) = world {
@@ -1514,6 +1520,7 @@ impl BotSession {
                     state.growing_tiles.clear();
                     state.collectables.clear();
                     state.other_players.clear();
+                            state.ai_enemies.clear();
                     state.player_position = PlayerPosition {
                         map_x: decoded_world.snapshot.spawn_map_x,
                         map_y: decoded_world.snapshot.spawn_map_y,
@@ -1633,6 +1640,15 @@ impl BotSession {
                             ],
                         )
                         .await;
+                    } else if world.to_uppercase() == "MINEWORLD" {
+                        let _ = send_docs_exclusive(
+                            &runtime.outbound_tx,
+                            vec![
+                                protocol::make_world_action_mine(0),
+                                protocol::make_join_world_special(&world, 0),
+                            ],
+                        )
+                        .await;
                     } else {
                         let _ = send_doc(&runtime.outbound_tx, protocol::make_join_world(&world)).await;
                     }
@@ -1687,6 +1703,7 @@ impl BotSession {
             state.growing_tiles.clear();
             state.collectables.clear();
             state.other_players.clear();
+                            state.ai_enemies.clear();
             state.player_position = PlayerPosition {
                 map_x: None,
                 map_y: None,
@@ -1921,6 +1938,34 @@ impl BotSession {
             .await
             .collectables
             .remove(&collectable_id);
+    }
+
+    /// Record an AI enemy's last known position from an AIHD packet.
+    /// AIHD fields: BDmg, IC, AIid, HBv, x, y. IC=true (or HBv<=0) means the enemy died.
+    async fn track_ai_enemy(&self, message: &Document) {
+        let Ok(ai_id) = message.get_i32("AIid") else {
+            return;
+        };
+        let map_x = message.get_i32("x").unwrap_or_default();
+        let map_y = message.get_i32("y").unwrap_or_default();
+        let killed = message.get_bool("IC").unwrap_or(false)
+            || message.get_i32("HBv").map(|hp| hp <= 0).unwrap_or(false);
+
+        let mut state = self.state.write().await;
+        if killed {
+            state.ai_enemies.remove(&ai_id);
+        } else {
+            state.ai_enemies.insert(
+                ai_id,
+                AiEnemyState {
+                    ai_id,
+                    map_x,
+                    map_y,
+                    last_seen: Instant::now(),
+                    alive: true,
+                },
+            );
+        }
     }
 
     async fn apply_fishing_message(
@@ -2461,6 +2506,7 @@ struct SessionState {
     growing_tiles: HashMap<(i32, i32), GrowingTileState>,
     player_position: PlayerPosition,
     other_players: HashMap<String, PlayerPosition>,
+    ai_enemies: HashMap<i32, AiEnemyState>,
     inventory: Vec<InventoryEntry>,
     collectables: HashMap<i32, CollectableState>,
     current_direction: i32,
@@ -2530,6 +2576,16 @@ struct InventoryEntry {
     block_id: u16,
     inventory_type: u16,
     amount: u16,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct AiEnemyState {
+    ai_id: i32,
+    map_x: i32,
+    map_y: i32,
+    last_seen: Instant,
+    alive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3084,7 +3140,10 @@ async fn automine_loop(
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let mut tick = interval(Duration::from_millis(500));
+    // Faster cadence than the old 1200ms — we no longer per-tick spam WeOwC,
+    // so the rate-limit kick is no longer the constraint. BMod uses 220ms;
+    // 350ms keeps a safety margin while still feeling instant.
+    let mut tick = interval(Duration::from_millis(350));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
@@ -3095,39 +3154,58 @@ async fn automine_loop(
                 }
             }
             _ = tick.tick() => {
-                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory) = {
+                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, nearby_enemies) = {
                     let st = state.read().await;
                     let px = st.player_position.map_x.unwrap_or(0.0) as i32;
                     let py = st.player_position.map_y.unwrap_or(0.0) as i32;
                     let inventory = st.inventory.clone();
                     let current_world = st.current_world.clone();
-                    
+                    let session_status = st.status.clone();
+
+                    // Tracked AI enemies within melee range (Manhattan <= 1).
+                    // Populated by track_ai_enemy() from server AIHD packets.
+                    let nearby_enemies: Vec<(i32, i32, i32)> = st.ai_enemies.values()
+                        .filter(|e| e.alive
+                            && (e.map_x - px).abs() + (e.map_y - py).abs() <= 1)
+                        .map(|e| (e.map_x, e.map_y, e.ai_id))
+                        .collect();
+
                     if let Some(w) = &st.world {
-                        (px, py, w.width, w.height, st.world_foreground_tiles.clone(), current_world, inventory)
+                        (px, py, w.width, w.height, st.world_foreground_tiles.clone(), current_world, inventory, session_status, nearby_enemies)
                     } else {
-                        (px, py, 0, 0, vec![], current_world, inventory)
+                        (px, py, 0, 0, vec![], current_world, inventory, session_status, nearby_enemies)
                     }
                 };
 
-                // World Entry Logic: Join MINEWORLD if not already there
+                // Stop if session was explicitly stopped or errored
+                if matches!(session_status, SessionStatus::Idle | SessionStatus::Disconnected | SessionStatus::Error) {
+                    return Ok(());
+                }
+
+                // If currently transitioning connections (e.g. Redirecting to mine), just wait
+                if matches!(session_status, SessionStatus::Connecting | SessionStatus::Authenticating | SessionStatus::Redirecting) {
+                    continue;
+                }
+
                 let is_in_mine = current_world.as_deref().map(|w| w.to_uppercase() == "MINEWORLD").unwrap_or(false);
                 if !is_in_mine {
-                    // Hardcoded to Level 1 (0) for safety as requested
                     let best_level = 0; 
                     
-                    /* 
-                    // Future inventory-based priority logic:
-                    if inventory.iter().any(|e| e.block_id == 3972) { best_level = 4; } // Level 5
-                    else if inventory.iter().any(|e| e.block_id == 3971) { best_level = 3; } // Level 4
-                    else if inventory.iter().any(|e| e.block_id == 3970) { best_level = 2; } // Level 3
-                    else if inventory.iter().any(|e| e.block_id == 3969) { best_level = 1; } // Level 2
-                    */
-                    
-                    // Send World Argument FIRST, then Special Join after a delay
-                    let _ = send_doc(outbound_tx, protocol::make_world_action_mine(best_level)).await;
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    // TTjW with Is=True, W="MINEWORLD", WB=0, Amt=1 (matches working client)
-                    let _ = send_doc(outbound_tx, protocol::make_join_world_special("MINEWORLD", 0)).await;
+                    {
+                        let mut st = state.write().await;
+                        st.status = SessionStatus::JoiningWorld;
+                        st.pending_world = Some("MINEWORLD".to_string());
+                        st.pending_world_is_instance = true;
+                    }
+
+                    // Send wlA and TTjW in the exact same batch just like a normal JoinWorld command!
+                    let _ = send_docs(
+                        outbound_tx,
+                        vec![
+                            protocol::make_world_action_mine(best_level),
+                            protocol::make_join_world_special("MINEWORLD", 0),
+                        ],
+                    ).await;
                     
                     // Wait for world transition
                     tokio::time::sleep(Duration::from_secs(4)).await;
@@ -3164,15 +3242,16 @@ async fn automine_loop(
                     }
                 }
 
-                // Godmode: Use damage block / fighting potions to avoid damage
-                let _ = send_doc(outbound_tx, protocol::make_wear_item(2304)).await;
-                let _ = send_doc(outbound_tx, protocol::make_wear_item(2305)).await;
+                // Godmode-by-omission: damage is fully client-side (verified via packet capture —
+                // taking damage emits only a [PPA] audio packet, never a damage packet to the
+                // server). An external bot that never simulates self-damage is implicitly invincible,
+                // so we no longer wear damage/fighting potions.
 
-                // Auto-hit enemies (simulate hitting nearby area where enemies might be)
-                let _ = send_doc(outbound_tx, protocol::make_hit_block(player_x + 1, player_y)).await;
-                let _ = send_doc(outbound_tx, protocol::make_hit_block(player_x - 1, player_y)).await;
-                let _ = send_doc(outbound_tx, protocol::make_hit_block(player_x, player_y + 1)).await;
-                let _ = send_doc(outbound_tx, protocol::make_hit_block(player_x, player_y - 1)).await;
+                // Auto-hit AI enemies in melee range. Server AIHD response updates ai_enemies;
+                // when IC=true or HBv<=0, track_ai_enemy removes the entry and we stop hitting.
+                for (ex, ey, ai_id) in &nearby_enemies {
+                    let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(*ex, *ey, *ai_id)).await;
+                }
 
                 // Pathfinding & Breaking Blocks
                 match automine::find_best_target(player_x, player_y, world_width, world_height, &foreground) {
@@ -3195,10 +3274,19 @@ async fn automine_loop(
                                             format!("Breaking block {} at ({},{})", next_block, next_step.0, next_step.1));
                                         let _ = send_doc(outbound_tx, protocol::make_hit_block(next_step.0, next_step.1)).await;
                                     } else {
-                                        _logger.info("automine", Some(_session_id), 
-                                            format!("Moving to ({},{})", next_step.0, next_step.1));
+                                        _logger.info("automine", Some(_session_id),
+                                            format!("Moving to ({},{}) -> sending mp+mP exclusive batch", next_step.0, next_step.1));
                                         let move_pkts = protocol::make_move_to_map_point(next_step.0, next_step.1, movement::ANIM_IDLE, movement::DIR_LEFT);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
+
+                                        // Optimistically update local position so the next tick targets from
+                                        // the new spot — the server echo via maybe_update_player_positions
+                                        // will correct us if the move was rejected.
+                                        {
+                                            let mut st = state.write().await;
+                                            st.player_position.map_x = Some(next_step.0 as f64);
+                                            st.player_position.map_y = Some(next_step.1 as f64);
+                                        }
                                         
                                         if path.len() == 2 {
                                             let _ = send_doc(outbound_tx, protocol::make_hit_block(target_x, target_y)).await;
@@ -3604,6 +3692,7 @@ async fn run_tutorial_script(
             state.world_wiring_tiles.clear();
             state.collectables.clear();
             state.other_players.clear();
+                            state.ai_enemies.clear();
         }
         send_docs_exclusive(
             &outbound_tx,
@@ -4291,6 +4380,7 @@ async fn run_tutorial_script(
         state.world_wiring_tiles.clear();
         state.collectables.clear();
         state.other_players.clear();
+                            state.ai_enemies.clear();
     }
 
     send_docs_exclusive(
@@ -4445,6 +4535,7 @@ async fn ensure_world_cancellable(
             state.world_wiring_tiles.clear();
             state.collectables.clear();
             state.other_players.clear();
+                            state.ai_enemies.clear();
         }
         let eid = if world == tutorial::TUTORIAL_WORLD {
             "Start"
@@ -5192,6 +5283,7 @@ mod tests {
             },
             current_direction: movement::DIR_RIGHT,
             other_players: HashMap::new(),
+            ai_enemies: HashMap::new(),
             inventory: Vec::new(),
             collectables: HashMap::new(),
             last_error: None,
