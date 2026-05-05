@@ -4,3 +4,4 @@ dist
 user.json
 *.bin
 *.log
+docs/superpowers/
