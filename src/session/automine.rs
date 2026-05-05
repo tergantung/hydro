@@ -255,13 +255,17 @@ pub fn find_best_bot_target(
         }
         if near_enemy { continue; }
 
-        // Collectibles get a massive priority boost (perceived distance / 4)
-        // so the bot clears the floor before mining more.
-        // nWC packets (new world drops) get an even higher boost (/16).
-        let priority_dist = if state.is_nwc {
-            dist_sq / 16
+        // Collectibles priority:
+        // - Rare items (Gems 4012-4056, nWC, and High-Value Nuggets 4155-4162): Extreme boost (dist_sq / 10000)
+        // - Standard items (Bronze Nuggets 4154, etc): No boost (dist_sq)
+        let is_rare_gem = state.is_gem || (state.block_type >= 4012 && state.block_type <= 4056);
+        let is_rare_nugget = (state.block_type >= 4155 && state.block_type <= 4157) || state.block_type == 4162;
+        let is_rare = is_rare_gem || is_rare_nugget || state.is_nwc;
+
+        let priority_dist = if is_rare {
+            dist_sq / 10000
         } else {
-            dist_sq / 4
+            dist_sq
         };
 
         if best_target.is_none() || priority_dist < best_target.as_ref().unwrap().1 {

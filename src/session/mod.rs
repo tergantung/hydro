@@ -2177,7 +2177,9 @@ impl BotSession {
 
         let pos_x = message.get_f64("PosX").ok().or_else(|| message.get_i32("PosX").ok().map(|v| v as f64)).unwrap_or_default();
         let pos_y = message.get_f64("PosY").ok().or_else(|| message.get_i32("PosY").ok().map(|v| v as f64)).unwrap_or_default();
-        let (mx, my) = protocol::world_to_map(pos_x, pos_y);
+        // Collectables in nCo/nWC packets are already in map-tile units.
+        // Do NOT call world_to_map here.
+        let (mx, my) = (pos_x, pos_y);
 
         let collectable = CollectableState {
             collectable_id,
@@ -3603,9 +3605,8 @@ async fn automine_loop(
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    // Increased to 800ms for high-ping stability and to avoid fast-hit detections.
-    let mut tick = interval(Duration::from_millis(800));
-    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // We now use dynamic sleep instead of a fixed interval to handle ping jitter.
+    let mut last_tick = Instant::now();
 
     // Equip a pickaxe once per session and re-equip after losing it. Without
     // a pickaxe in hand the server ignores all HB packets — verified via Seraph
@@ -3615,8 +3616,8 @@ async fn automine_loop(
     // Per-tile HB attempt counter. After MAX_TILE_ATTEMPTS hits without the
     // server confirming destruction (DB packet → foreground tile zeroed),
     // the tile is considered a dead-end and excluded from target search.
-    // Matches Seraph's "tunnel-dig failed: did not break in 15 retries".
-    const MAX_TILE_ATTEMPTS: u32 = 8;
+    // Increased to 15 to handle high-ping scenarios.
+    const MAX_TILE_ATTEMPTS: u32 = 15;
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
@@ -3628,13 +3629,24 @@ async fn automine_loop(
     let mut prev_dead_end_count: usize = 0;
 
     loop {
+        let ping = { state.read().await.ping_ms.unwrap_or(0) };
+        let base_delay = 800;
+        let dynamic_delay = if ping > 150 {
+            base_delay + (ping - 100)
+        } else {
+            base_delay
+        };
+        let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay as u64))
+            .saturating_duration_since(Instant::now());
+
         tokio::select! {
             _ = stop_rx.changed() => {
                 if *stop_rx.borrow() {
                     return Ok(());
                 }
             }
-            _ = tick.tick() => {
+            _ = tokio::time::sleep(sleep_duration) => {
+                last_tick = Instant::now();
                 let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, _nearby_enemies, all_enemies) = {
                     let st = state.read().await;
                     let px = st.player_position.map_x.unwrap_or(0.0) as i32;
@@ -3821,13 +3833,9 @@ async fn automine_loop(
                                 if !st.collect_cooldowns.can_collect(c.collectable_id) {
                                     return None;
                                 }
-                                // pos_x/pos_y are WORLD coords (pixels) — convert
-                                // to map tiles before comparing to player_x/player_y
-                                // which are already map-tile integers. Use floor()
-                                // to ensure items resting on blocks don't snap inside them.
-                                let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
-                                let cx = mx.floor() as i32;
-                                let cy = my.floor() as i32;
+                                // CollectableState map_x/map_y are already correctly scaled.
+                                let cx = c.map_x;
+                                let cy = c.map_y;
                                 let dx = (cx - player_x).abs();
                                 let dy = (cy - player_y).abs();
                                 if dx <= COLLECT_RADIUS && dy <= COLLECT_RADIUS {
@@ -4000,13 +4008,7 @@ async fn automine_loop(
                                     } else {
                                         // Pure movement: pick the anim that physically describes
                                         // this single-tile transition.
-                                        let anim = if is_moving_up {
-                                            movement::ANIM_JUMP
-                                        } else if is_moving_down {
-                                            movement::ANIM_FALL
-                                        } else {
-                                            movement::ANIM_WALK
-                                        };
+                                        let anim = movement::ANIM_FALL;
 
                                         let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;

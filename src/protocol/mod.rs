@@ -581,7 +581,6 @@ pub fn make_movement_packet(
 pub fn make_move_to_map_point(_player_x: i32, _player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
     let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
     vec![
-        make_movement_packet(new_world_x, new_world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
     ]
