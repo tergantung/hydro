@@ -186,7 +186,7 @@ pub struct LuaWorldSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BotTarget {
     Mining { x: i32, y: i32 },
-    Collecting { id: i32, x: i32, y: i32 },
+    Collecting { id: i32, block_id: u16, x: i32, y: i32 },
     Fighting { ai_id: i32, x: i32, y: i32 },
     Moving { x: i32, y: i32 },
     Fishing { x: i32, y: i32 },

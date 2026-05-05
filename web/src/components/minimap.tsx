@@ -525,7 +525,11 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
               <Target className="size-5 text-emerald-400 animate-pulse" />
               <div className="flex flex-col">
                 <span className="text-[10px] uppercase font-bold text-emerald-400/70">Current Action</span>
-                <span className="text-xs font-bold text-emerald-100 capitalize">{currentTarget.type}</span>
+                <span className="text-xs font-bold text-emerald-100 capitalize">
+                  {currentTarget.type === "collecting" && [4154, 4155, 4156, 4157, 4162].includes(currentTarget.block_id || 0) 
+                    ? "Nugget" 
+                    : currentTarget.type}
+                </span>
               </div>
             </div>
 

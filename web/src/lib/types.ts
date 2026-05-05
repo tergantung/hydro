@@ -26,6 +26,7 @@ export type BotTarget =
   | {
       type: "collecting"
       id: number
+      block_id: number
       x: number
       y: number
     }

@@ -96,11 +96,19 @@ pub fn is_gemstone(block_id: u16) -> bool {
         block_id, 
         // Legacy main world gemstones
         20..=32 |
-        // MineWorld Crystals (3974-3979)
-        3974..=3979 |
         // MineWorld GemStones (3995-4003)
         3995..=4003
     )
+}
+
+/// Is this a nugget (highest priority)?
+pub fn is_nugget(block_id: u16) -> bool {
+    matches!(block_id, 4154..=4157 | 4162)
+}
+
+/// Is this a crystal (lowest priority mineable)?
+pub fn is_crystal(block_id: u16) -> bool {
+    matches!(block_id, 3974..=3979)
 }
 
 /// Collectible detection: build a cached set of block IDs that are "collectable".
@@ -202,14 +210,27 @@ pub fn find_best_target(
                     let is_better = match best_target {
                         None => true,
                         Some((_, _, prev_id, prev_dist)) => {
-                            // Prefer collectibles > gemstones > other mineable; then distance
-                            if is_collectible(block_id) && !is_collectible(prev_id) {
+                            // Priority Ranking: 
+                            // 1. Nuggets (4)
+                            // 2. Other Collectibles (3)
+                            // 3. Gemstones (2)
+                            // 4. Crystals (1)
+                            // 5. Others (0)
+                            
+                            let rank = |id: u16| -> i32 {
+                                if is_nugget(id) { 4 }
+                                else if is_collectible(id) { 3 }
+                                else if is_gemstone(id) { 2 }
+                                else if is_crystal(id) { 1 }
+                                else { 0 }
+                            };
+
+                            let current_rank = rank(block_id);
+                            let prev_rank = rank(prev_id);
+
+                            if current_rank > prev_rank {
                                 true
-                            } else if !is_collectible(block_id) && is_collectible(prev_id) {
-                                false
-                            } else if is_gemstone(block_id) && !is_gemstone(prev_id) {
-                                true
-                            } else if !is_gemstone(block_id) && is_gemstone(prev_id) {
+                            } else if current_rank < prev_rank {
                                 false
                             } else {
                                 dist_sq < prev_dist

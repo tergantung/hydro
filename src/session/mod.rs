@@ -3441,8 +3441,8 @@ async fn automine_loop(
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    // Reverted to 600ms as requested (safe margin for mining).
-    let mut tick = interval(Duration::from_millis(600));
+    // Increased to 650ms for safer movement margins to avoid speed-hack kicks.
+    let mut tick = interval(Duration::from_millis(650));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     // Equip a pickaxe once per session and re-equip after losing it. Without
@@ -3639,13 +3639,24 @@ async fn automine_loop(
                         let cx = c.pos_x.floor() as i32;
                         let cy = c.pos_y.floor() as i32;
                         let dist = (cx - player_x).abs() + (cy - player_y).abs();
-                        (cx, cy, c.collectable_id, dist)
+                        (cx, cy, c.collectable_id, c.block_type, dist)
                     }).collect();
                     
-                    // Sort closest to furthest
-                    all_cols.sort_by_key(|k| k.3);
+                    // Sort by priority (Nugget > Others) then distance
+                    all_cols.sort_by(|a, b| {
+                        let a_is_nugget = automine::is_nugget(a.3 as u16);
+                        let b_is_nugget = automine::is_nugget(b.3 as u16);
+                        
+                        if a_is_nugget && !b_is_nugget {
+                            std::cmp::Ordering::Less
+                        } else if !a_is_nugget && b_is_nugget {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.4.cmp(&b.4)
+                        }
+                    });
 
-                    for (cx, cy, cid, _) in all_cols {
+                    for (cx, cy, cid, _, _) in all_cols {
                         if let Some(path) = automine::get_path_to_target(player_x, player_y, cx, cy, &masked_foreground, world_width, world_height) {
                             best_collectable = Some((cx, cy, cid, path));
                             break;
@@ -3698,8 +3709,11 @@ async fn automine_loop(
                         });
                     } else if let Some((tx, ty, is_col, cid, _)) = &target {
                         st.current_target = Some(if *is_col {
+                            // Find the block_type for this collectable to send to UI
+                            let block_id = state.read().await.collectables.get(&cid.unwrap()).map(|c| c.block_type as u16).unwrap_or(0);
                             BotTarget::Collecting {
                                 id: cid.unwrap(),
+                                block_id,
                                 x: *tx,
                                 y: *ty,
                             }
@@ -3713,7 +3727,6 @@ async fn automine_loop(
                         st.current_target = None;
                     }
                 }
-                publish_state_snapshot(_logger, _session_id, state).await;
 
                 match target {
                     Some((target_x, target_y, is_collectable, opt_cid, opt_path)) => {
@@ -3842,6 +3855,9 @@ async fn automine_loop(
                             format!("dead-end: tile ({},{}) did not break in {} retries", hx, hy, MAX_TILE_ATTEMPTS));
                     }
                 }
+
+                // Force UI update AFTER all critical game packets have been sent
+                publish_state_snapshot(_logger, _session_id, state).await;
             }
         }
     }
