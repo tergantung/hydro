@@ -258,6 +258,15 @@ impl BotSession {
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
             current_target: state.current_target.clone(),
+            collectables: state.collectables.values().map(|c| crate::models::LuaCollectableSnapshot {
+                id: c.collectable_id,
+                block_type: c.block_type,
+                amount: c.amount,
+                inventory_type: c.inventory_type,
+                pos_x: c.pos_x,
+                pos_y: c.pos_y,
+                is_gem: c.is_gem,
+            }).collect(),
         }
     }
 
@@ -711,7 +720,7 @@ impl BotSession {
             .await
             .inventory
             .iter()
-            .filter(|entry| entry.block_id == block_id)
+                    .filter(|entry| entry.block_id == block_id)
             .map(|entry| entry.amount as u32)
             .sum()
     }
@@ -1555,8 +1564,23 @@ impl BotSession {
                     state.world_wiring_tiles = decoded_world.wiring_tiles;
                     state.growing_tiles.clear();
                     state.collectables.clear();
+                    for c in decoded_world.collectables {
+                        state.collectables.insert(c.collectable_id, CollectableState {
+                            collectable_id: c.collectable_id,
+                            block_type: c.block_type,
+                            amount: c.amount,
+                            inventory_type: c.inventory_type,
+                            pos_x: c.pos_x,
+                            pos_y: c.pos_y,
+                            map_x: protocol::world_to_map_x(c.pos_x),
+                            map_y: protocol::world_to_map_y(c.pos_y),
+                            is_gem: c.is_gem,
+                            gem_type: c.gem_type,
+                        });
+                    }
+                    state.world_items = decoded_world.world_items;
                     state.other_players.clear();
-                            state.ai_enemies.clear();
+                    state.ai_enemies.clear();
                     state.player_position = PlayerPosition {
                         map_x: decoded_world.snapshot.spawn_map_x,
                         map_y: decoded_world.snapshot.spawn_map_y,
@@ -2065,8 +2089,8 @@ impl BotSession {
             block_type: message.get_i32("BlockType").unwrap_or_default(),
             amount: message.get_i32("Amount").unwrap_or_default(),
             inventory_type: message.get_i32("InventoryType").unwrap_or_default(),
-            pos_x: message.get_f64("PosX").unwrap_or_default(),
-            pos_y: message.get_f64("PosY").unwrap_or_default(),
+            pos_x: message.get_f64("PosX").ok().or_else(|| message.get_i32("PosX").ok().map(|v| v as f64)).unwrap_or_default(),
+            pos_y: message.get_f64("PosY").ok().or_else(|| message.get_i32("PosY").ok().map(|v| v as f64)).unwrap_or_default(),
             is_gem: message.get_bool("IsGem").unwrap_or(false),
         };
 
@@ -2152,8 +2176,29 @@ impl BotSession {
             return;
         }
 
-        // Byte 12: Event Type — must be 4 (spawn).
-        if blob[12] != 4 {
+        // Byte 12: Event Type.
+        // Observed types: 4=Spawn, 1=Move/Update?
+        let event_type = blob[12];
+        if event_type != 4 {
+            if blob.len() == 37 && (event_type == 1 || event_type == 2) {
+                // Potential movement update. structure might match spawn.
+                let ai_id = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
+                let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
+                let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
+                
+                if (0..=1024).contains(&map_x) && (0..=1024).contains(&map_y) {
+                    let mut state = self.state.write().await;
+                    if let Some(enemy) = state.ai_enemies.get_mut(&ai_id) {
+                        enemy.map_x = map_x;
+                        enemy.map_y = map_y;
+                        enemy.last_seen = Instant::now();
+                    }
+                    return;
+                }
+            }
+            // Log other event types for analysis
+            self.logger.debug("session", Some(&self.id), 
+                format!("AI packet event_type={} len={} hex={}", event_type, blob.len(), hex::encode(blob)));
             return;
         }
 
@@ -2167,10 +2212,10 @@ impl BotSession {
         }
 
         // Confirmed offsets from packet analysis:
-        // Byte 0-3:   ai_id (i32 LE)
+        // Byte 8-11:  ai_id (i32 LE)
         // Byte 18-21: map_x (i32 LE)
         // Byte 22-25: map_y (i32 LE)
-        let ai_id = i32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+        let ai_id = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
         let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
         let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
 
@@ -2197,6 +2242,8 @@ impl BotSession {
                 alive: true,
             },
         );
+        drop(state);
+        self.publish_snapshot_position_throttled().await;
     }
 
     async fn apply_fishing_message(
@@ -2787,6 +2834,7 @@ struct SessionState {
     collect_cooldowns: CollectCooldowns,
     rate_limit_until: Option<Instant>,
     current_target: Option<BotTarget>,
+    world_items: Vec<crate::world::DecodedWorldItem>,
 }
 
 #[derive(Debug)]
@@ -3459,6 +3507,12 @@ async fn automine_loop(
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<(i32, i32, bool, Option<i32>)> = None; // (x, y, is_col, opt_cid)
 
+    // Crystal throttle: aren't valuable enough to chase routinely. Allow one
+    // crystal target per CRYSTAL_INTERVAL successful breaks, then reset.
+    const CRYSTAL_INTERVAL: u32 = 5;
+    let mut breaks_since_crystal: u32 = 0;
+    let mut prev_dead_end_count: usize = 0;
+
     loop {
         tokio::select! {
             _ = stop_rx.changed() => {
@@ -3467,7 +3521,7 @@ async fn automine_loop(
                 }
             }
             _ = tick.tick() => {
-                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, nearby_enemies, all_enemies) = {
+                let (player_x, player_y, world_width, world_height, foreground, current_world, inventory, session_status, _nearby_enemies, all_enemies) = {
                     let st = state.read().await;
                     let px = st.player_position.map_x.unwrap_or(0.0) as i32;
                     let py = st.player_position.map_y.unwrap_or(0.0) as i32;
@@ -3558,6 +3612,8 @@ async fn automine_loop(
 
                 // Drop attempt entries for tiles the server has confirmed destroyed
                 // (foreground tile is now 0). Those positions are walkable now.
+                // Each removal here is one successful break — feed the crystal throttle.
+                let attempts_before = tile_attempts.len();
                 tile_attempts.retain(|&(x, y), _| {
                     if x < 0 || y < 0 || (x as u32) >= world_width || (y as u32) >= world_height {
                         return false;
@@ -3565,6 +3621,13 @@ async fn automine_loop(
                     let idx = (y as u32 * world_width + x as u32) as usize;
                     foreground.get(idx).copied().unwrap_or(0) != 0
                 });
+                let active_dead_ends = tile_attempts.values().filter(|&&n| n >= MAX_TILE_ATTEMPTS).count();
+                let removed_count = attempts_before.saturating_sub(tile_attempts.len());
+                // Don't count dead-end-purges as successful breaks (they were skipped, not broken).
+                let new_dead_ends = active_dead_ends.saturating_sub(prev_dead_end_count);
+                let real_breaks = removed_count.saturating_sub(new_dead_ends);
+                breaks_since_crystal = breaks_since_crystal.saturating_add(real_breaks as u32);
+                prev_dead_end_count = active_dead_ends;
 
                 // Build a masked view of the foreground where dead-end tiles are
                 // replaced with bedrock (3993 — astar's get_tile_cost returns None,
@@ -3625,47 +3688,59 @@ async fn automine_loop(
                     record_action(state, format!("HAI ai_id={ai_id} at=({ex},{ey})")).await;
                 }
 
-                // Track tiles we attempt to break this tick so we can bump their counters
-                // and log dead-end transitions outside the pathfinding closure.
-                let mut hit_this_tick: Option<(i32, i32)> = None;
-
-                // Check for ANY dropped collectables (gems, nuggets) across the entire world.
-                // We sort by distance and ensure they are actually reachable to prevent infinite pathing loops.
-                let mut best_collectable: Option<(i32, i32, i32, Vec<(i32, i32)>)> = None;
-                
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // AUTO-COLLECT: spam `C` for every dropped collectable within
+                // magnet range (~4 world-tiles). The server validates proximity
+                // and quietly drops collect requests for items too far away, so
+                // there's no penalty for asking. This catches nuggets/coins/gems
+                // that scattered around when we mined adjacent blocks — the old
+                // path-walking-to-drop logic was missing them because we'd already
+                // moved on by the time the path completed.
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 {
-                    let st = state.read().await;
-                    let mut all_cols: Vec<_> = st.collectables.values().map(|c| {
-                        let cx = c.pos_x.floor() as i32;
-                        let cy = c.pos_y.floor() as i32;
-                        let dist = (cx - player_x).abs() + (cy - player_y).abs();
-                        (cx, cy, c.collectable_id, c.block_type, dist)
-                    }).collect();
-                    
-                    // Sort by priority (Nugget > Others) then distance
-                    all_cols.sort_by(|a, b| {
-                        let a_is_nugget = automine::is_nugget(a.3 as u16);
-                        let b_is_nugget = automine::is_nugget(b.3 as u16);
-                        
-                        if a_is_nugget && !b_is_nugget {
-                            std::cmp::Ordering::Less
-                        } else if !a_is_nugget && b_is_nugget {
-                            std::cmp::Ordering::Greater
-                        } else {
-                            a.4.cmp(&b.4)
-                        }
-                    });
-
-                    for (cx, cy, cid, _, _) in all_cols {
-                        if let Some(path) = automine::get_path_to_target(player_x, player_y, cx, cy, &masked_foreground, world_width, world_height) {
-                            best_collectable = Some((cx, cy, cid, path));
-                            break;
+                    const COLLECT_RADIUS: i32 = 1; // map tiles
+                    let to_collect: Vec<i32> = {
+                        let st = state.read().await;
+                        st.collectables
+                            .values()
+                            .filter_map(|c| {
+                                if !st.collect_cooldowns.can_collect(c.collectable_id) {
+                                    return None;
+                                }
+                                // pos_x/pos_y are WORLD coords (pixels) — convert
+                                // to map tiles before comparing to player_x/player_y
+                                // which are already map-tile integers. Use floor()
+                                // to ensure items resting on blocks don't snap inside them.
+                                let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
+                                let cx = mx.floor() as i32;
+                                let cy = my.floor() as i32;
+                                let dx = (cx - player_x).abs();
+                                let dy = (cy - player_y).abs();
+                                if dx <= COLLECT_RADIUS && dy <= COLLECT_RADIUS {
+                                    Some(c.collectable_id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    };
+                    if !to_collect.is_empty() {
+                        _logger.info("automine", Some(&_session_id),
+                            format!("AUTO-COLLECT: requesting {} drops within {}-tile radius", to_collect.len(), COLLECT_RADIUS));
+                        for cid in to_collect {
+                            let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                            // Keep local set in sync using cooldowns instead of optimistic deletion.
+                            state.write().await.collect_cooldowns.mark_collected(cid);
                         }
                     }
                 }
 
+                // Track tiles we attempt to break this tick so we can bump their counters
+                // and log dead-end transitions outside the pathfinding closure.
+                let mut hit_this_tick: Option<(i32, i32)> = None;
+
                 // Pathfinding target selection with stickiness
-                let mut target = None;
+                let mut target: Option<(i32, i32, bool, Option<i32>, Option<Vec<(i32, i32)>>)> = None;
 
                 // 1. Check if our sticky target is still valid
                 if let Some((tx, ty, is_col, cid)) = sticky_target {
@@ -3679,26 +3754,106 @@ async fn automine_loop(
                     let not_masked = tile_attempts.get(&(tx, ty)).copied().unwrap_or(0) < MAX_TILE_ATTEMPTS;
 
                     if still_exists && not_masked {
-                        // Re-verify reachability
-                        if let Some(path) = automine::get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
-                            target = Some((tx, ty, is_col, cid, Some(path)));
+                        // Priority Preemption: If sticky target is "Junk" but a "Valuable" exists, drop it!
+                        let idx = (ty as u32 * world_width + tx as u32) as usize;
+                        let block_id = foreground.get(idx).copied().unwrap_or(0);
+                        let is_sticky_valuable = is_col || automine::is_minegem(block_id);
+
+                        let mut valuable_exists = false;
+                        if !is_sticky_valuable {
+                            let st = state.read().await;
+                            valuable_exists = !st.collectables.is_empty()
+                                || automine::find_all_targets(player_x, player_y, world_width, world_height, &masked_foreground)
+                                   .iter().any(|&(mx, my)| {
+                                       let midx = (my as u32 * world_width + mx as u32) as usize;
+                                       let mid = foreground.get(midx).copied().unwrap_or(0);
+                                       automine::is_minegem(mid)
+                                   });
+                        }
+
+                        if is_sticky_valuable || !valuable_exists {
+                            // Re-verify reachability
+                            if let Some(path) = automine::get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
+                                target = Some((tx, ty, is_col, cid, Some(path)));
+                            }
                         }
                     }
                 }
 
-                // 2. If no sticky target or unreachable, perform a fresh scan
+                // 2. Perform a fresh scan if no sticky target
                 if target.is_none() {
-                    target = best_collectable.map(|(cx, cy, cid, path)| (cx, cy, true, Some(cid), Some(path)))
-                        .or_else(|| {
-                            automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground)
-                                .map(|(tx, ty)| (tx, ty, false, None, None))
-                        });
+                    let mut all_possible_targets = Vec::new();
+
+                    // Pool all collectables
+                    {
+                        let st = state.read().await;
+                        for c in st.collectables.values() {
+                            if !st.collect_cooldowns.can_collect(c.collectable_id) { continue; }
+                            let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
+                            let cx = mx.floor() as i32;
+                            let cy = my.floor() as i32;
+                            let dist = (cx - player_x).pow(2) + (cy - player_y).pow(2);
+                            all_possible_targets.push((cx, cy, true, Some(c.collectable_id), dist, c.block_type as u16));
+                        }
+                    }
+
+                    // Pool all mineable blocks from the proximity scan
+                    let mine_targets = automine::find_all_targets(
+                        player_x, player_y,
+                        world_width, world_height,
+                        &masked_foreground,
+                    );
+                    for (tx, ty) in mine_targets {
+                        let idx = (ty as u32 * world_width + tx as u32) as usize;
+                        let block_id = masked_foreground.get(idx).copied().unwrap_or(0);
+                        let dist = (tx - player_x).pow(2) + (ty - player_y).pow(2);
+                        all_possible_targets.push((tx, ty, false, None, dist, block_id));
+                    }
+
+                    // Sort by Priority:
+                    //   3 = Collectibles (Floor Drops)
+                    //   2 = MineGems (Wall Gems)
+                    //   1 = Common Terrain (Fallback)
+                    // Then by Distance.
+                    all_possible_targets.sort_by(|a, b| {
+                        let a_rank = if a.2 { 3 } else if automine::is_minegem(a.5) { 2 } else if automine::is_common_terrain(a.5) { 1 } else { 0 };
+                        let b_rank = if b.2 { 3 } else if automine::is_minegem(b.5) { 2 } else if automine::is_common_terrain(b.5) { 1 } else { 0 };
+
+                        if a_rank != b_rank {
+                            b_rank.cmp(&a_rank) // Higher rank first
+                        } else {
+                            a.4.cmp(&b.4) // Nearest first
+                        }
+                    });
+
+                    // Pick the nearest reachable target
+                    for (tx, ty, is_col, cid, _, _) in all_possible_targets {
+                        if let Some(path) = automine::get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
+                            target = Some((tx, ty, is_col, cid, Some(path)));
+                            break;
+                        }
+                    }
                 }
 
                 // 3. Update sticky target state
                 sticky_target = target.as_ref().map(|(tx, ty, is_col, cid, _)| (*tx, *ty, *is_col, *cid));
 
-                // Sync current targeting state to the UI
+                // Sync current targeting state to the UI.
+                // Resolve the collectable's block_id BEFORE acquiring the write lock
+                // — `state.read().await` while holding `state.write()` would
+                // self-deadlock the task. This branch only fires when targeting a
+                // collectable, which is exactly what started happening once we
+                // seeded pre-scattered drops, hence the bot suddenly going silent.
+                let target_block_id = match &target {
+                    Some((_, _, true, Some(cid), _)) => state
+                        .read()
+                        .await
+                        .collectables
+                        .get(cid)
+                        .map(|c| c.block_type as u16)
+                        .unwrap_or(0),
+                    _ => 0,
+                };
                 {
                     let mut st = state.write().await;
                     if let Some((ex, ey, ai_id)) = closest_enemy {
@@ -3709,11 +3864,9 @@ async fn automine_loop(
                         });
                     } else if let Some((tx, ty, is_col, cid, _)) = &target {
                         st.current_target = Some(if *is_col {
-                            // Find the block_type for this collectable to send to UI
-                            let block_id = state.read().await.collectables.get(&cid.unwrap()).map(|c| c.block_type as u16).unwrap_or(0);
                             BotTarget::Collecting {
                                 id: cid.unwrap(),
-                                block_id,
+                                block_id: target_block_id,
                                 x: *tx,
                                 y: *ty,
                             }
@@ -3743,6 +3896,12 @@ async fn automine_loop(
                                     let next_step = path[1];
                                     let next_index = (next_step.1 as u32 * world_width + next_step.0 as u32) as usize;
                                     let next_block = foreground.get(next_index).copied().unwrap_or(0);
+                                    let is_last_step = path.len() == 2;
+                                    let next_is_solid = !crate::pathfinding::astar::is_walkable_tile(next_block);
+                                    
+                                    // If the NEXT tile is solid, we definitely can't move into it.
+                                    // If the NEXT tile is the TARGET and the TARGET is a block, stay here.
+                                    let move_blocked = next_is_solid || (is_last_step && !is_collectable);
 
                                     // Direction: face toward the target
                                     let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
@@ -3754,12 +3913,10 @@ async fn automine_loop(
                                     let is_moving_up = next_step.1 < player_y;
                                     let is_moving_down = next_step.1 > player_y;
 
-                                    if !crate::pathfinding::astar::is_walkable_tile(next_block) {
-                                        // Mining a block in the path. Use HIT_MOVE for horizontal
-                                        // strikes. For vertical, the bot is jumping/falling INTO the
-                                        // block — but we don't have a "hit-while-jumping" anim, so
-                                        // fall back to HIT_MOVE which the server accepts during a
-                                        // 1-tile vertical breach.
+                                    if move_blocked {
+                                        // Respect the DB (Destroy Block) packet: 
+                                        // If the path is blocked, we STAY STILL and hit.
+                                        // Do not optimistic-move into the tile.
                                         let anim = movement::ANIM_HIT_MOVE;
 
                                         // _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
@@ -3790,8 +3947,20 @@ async fn automine_loop(
 
                                         {
                                             let mut st = state.write().await;
+                                            // Update BOTH map and world so internal state stays
+                                            // self-consistent. The previous bug was updating only
+                                            // map_x/y while world_x/y stayed stale from the last
+                                            // server echo — `make_move_to_map_point` then computed
+                                            // outbound coords from drifted optimistic map and the
+                                            // server saw a giant teleport (ER=7 SpeedHack kick).
+                                            let (wx, wy) = protocol::map_to_world(
+                                                next_step.0 as f64,
+                                                next_step.1 as f64,
+                                            );
                                             st.player_position.map_x = Some(next_step.0 as f64);
                                             st.player_position.map_y = Some(next_step.1 as f64);
+                                            st.player_position.world_x = Some(wx);
+                                            st.player_position.world_y = Some(wy);
                                         }
 
                                         if path.len() == 2 {
@@ -3800,7 +3969,7 @@ async fn automine_loop(
                                                 let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
                                                 {
                                                     let mut st = state.write().await;
-                                                    st.collectables.remove(&cid);
+                                                    st.collect_cooldowns.mark_collected(cid);
                                                 }
                                                 record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
                                             } else {
@@ -3821,7 +3990,7 @@ async fn automine_loop(
                                         let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
                                         {
                                             let mut st = state.write().await;
-                                            st.collectables.remove(&cid);
+                                            st.collect_cooldowns.mark_collected(cid);
                                         }
                                         record_action(state, format!("request collectable cid={cid} on tile")).await;
                                     } else {
@@ -4010,7 +4179,9 @@ async fn fishing_loop(
             }
         }
 
-        sleep(Duration::from_millis(150)).await;
+        // 4. Rate limiting: match or exceed the game client's walking speed
+        // to avoid ER=7 (SpeedHack) kicks. 180-200ms is standard.
+        sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -6250,6 +6421,15 @@ async fn publish_state_snapshot(
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
             current_target: state.current_target.clone(),
+            collectables: state.collectables.values().map(|c| crate::models::LuaCollectableSnapshot {
+                id: c.collectable_id,
+                block_type: c.block_type,
+                amount: c.amount,
+                inventory_type: c.inventory_type,
+                pos_x: c.pos_x,
+                pos_y: c.pos_y,
+                is_gem: c.is_gem,
+            }).collect(),
         }
     };
     logger.session_snapshot(snapshot);
@@ -6325,6 +6505,15 @@ async fn set_local_map_position(
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
             current_target: state.current_target.clone(),
+            collectables: state.collectables.values().map(|c| crate::models::LuaCollectableSnapshot {
+                id: c.collectable_id,
+                block_type: c.block_type,
+                amount: c.amount,
+                inventory_type: c.inventory_type,
+                pos_x: c.pos_x,
+                pos_y: c.pos_y,
+                is_gem: c.is_gem,
+            }).collect(),
         }
     };
     logger.session_snapshot(snapshot);
@@ -6387,6 +6576,15 @@ async fn set_local_world_position(
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
             current_target: state.current_target.clone(),
+            collectables: state.collectables.values().map(|c| crate::models::LuaCollectableSnapshot {
+                id: c.collectable_id,
+                block_type: c.block_type,
+                amount: c.amount,
+                inventory_type: c.inventory_type,
+                pos_x: c.pos_x,
+                pos_y: c.pos_y,
+                is_gem: c.is_gem,
+            }).collect(),
         }
     };
     logger.session_snapshot(snapshot);
@@ -6424,11 +6622,12 @@ async fn collect_all_visible_collectables_cancellable(
 
     for collectable in collectables {
         ensure_not_cancelled(cancel)?;
+        let (mx, my) = protocol::world_to_map(collectable.pos_x, collectable.pos_y);
         walk_to_map_cancellable(
             state,
             outbound_tx,
-            collectable.pos_x.round() as i32,
-            collectable.pos_y.round() as i32,
+            mx.floor() as i32,
+            my.floor() as i32,
             cancel,
         )
         .await?;

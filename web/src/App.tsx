@@ -838,6 +838,7 @@ function App() {
                               playerPosition={session.player_position}
                               currentWorld={session.current_world}
                               currentTarget={session.current_target}
+                              collectables={session.collectables}
                               onHoverChange={getHoverChange(session.id)}
                             />
                             <div className="text-xs text-muted-foreground">

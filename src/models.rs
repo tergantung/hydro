@@ -211,6 +211,7 @@ pub struct SessionSnapshot {
     pub last_error: Option<String>,
     pub ping_ms: Option<u32>,
     pub current_target: Option<BotTarget>,
+    pub collectables: Vec<LuaCollectableSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

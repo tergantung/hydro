@@ -2,50 +2,50 @@ export type AuthKind = "android_device" | "jwt" | "email_password"
 
 export type AuthInput =
   | {
-      kind: "android_device"
-      device_id: string | null
-    }
+    kind: "android_device"
+    device_id: string | null
+  }
   | {
-      kind: "jwt"
-      jwt: string
-      device_id: string | null
-    }
+    kind: "jwt"
+    jwt: string
+    device_id: string | null
+  }
   | {
-      kind: "email_password"
-      email: string
-      password: string
-      device_id: string | null
-    }
+    kind: "email_password"
+    email: string
+    password: string
+    device_id: string | null
+  }
 
 export type BotTarget =
   | {
-      type: "mining"
-      x: number
-      y: number
-    }
+    type: "mining"
+    x: number
+    y: number
+  }
   | {
-      type: "collecting"
-      id: number
-      block_id: number
-      x: number
-      y: number
-    }
+    type: "collecting"
+    id: number
+    block_id: number
+    x: number
+    y: number
+  }
   | {
-      type: "fighting"
-      ai_id: number
-      x: number
-      y: number
-    }
+    type: "fighting"
+    ai_id: number
+    x: number
+    y: number
+  }
   | {
-      type: "moving"
-      x: number
-      y: number
-    }
+    type: "moving"
+    x: number
+    y: number
+  }
   | {
-      type: "fishing"
-      x: number
-      y: number
-    }
+    type: "fishing"
+    x: number
+    y: number
+  }
 
 
 export type SessionStatus =
@@ -103,6 +103,17 @@ export type SessionSnapshot = {
   last_error: string | null
   ping_ms: number | null
   current_target: BotTarget | null
+  collectables: CollectableSnapshot[]
+}
+
+export type CollectableSnapshot = {
+  id: number
+  block_type: number
+  amount: number
+  inventory_type: number
+  pos_x: number
+  pos_y: number
+  is_gem: boolean
 }
 
 export type MinimapSnapshot = {
@@ -156,17 +167,17 @@ export type TutorialCompletedEvent = {
 
 export type ServerEvent =
   | {
-      type: "log"
-      event: LogEvent
-    }
+    type: "log"
+    event: LogEvent
+  }
   | {
-      type: "session"
-      snapshot: SessionSnapshot
-    }
+    type: "session"
+    snapshot: SessionSnapshot
+  }
   | {
-      type: "tutorial_completed"
-      event: TutorialCompletedEvent
-    }
+    type: "tutorial_completed"
+    event: TutorialCompletedEvent
+  }
 
 export type BlockType = {
   id: number

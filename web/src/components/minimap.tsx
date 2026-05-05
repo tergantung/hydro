@@ -2,7 +2,7 @@ import { Crosshair, Target } from "@phosphor-icons/react"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 
 import { minimapColor } from "@/lib/dashboard"
-import type { AiEnemySnapshot, BotTarget, MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot } from "@/lib/types"
+import type { AiEnemySnapshot, BotTarget, CollectableSnapshot, MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot } from "@/lib/types"
 import { getAtlas, peekAtlas, type AtlasBundle } from "@/lib/atlas"
 
 type Props = {
@@ -12,6 +12,7 @@ type Props = {
   otherPlayers: RemotePlayerSnapshot[]
   currentWorld: string | null
   currentTarget: BotTarget | null
+  collectables: CollectableSnapshot[]
   onHoverChange: (value: string) => void
 }
 
@@ -79,7 +80,7 @@ interface EntityVisual {
   y: number
 }
 
-function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, currentTarget, onHoverChange }: Props) {
+function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, currentTarget, collectables, onHoverChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const tileLayerRef = useRef<HTMLCanvasElement | null>(null)
   const atlasImgRef = useRef<HTMLImageElement | null>(null)
@@ -257,6 +258,33 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       ctx.strokeRect(hx, hy, scale, scale)
     }
 
+    // Draw Collectables (Dropped Items)
+    for (const c of collectables) {
+        // pos_x and pos_y are world coords; convert to map coords for rendering
+        // TILE_WIDTH = 0.32, TILE_HEIGHT = 0.32. 
+        // Map X = world_x / 0.32
+        // Map Y = (world_y + 0.16) / 0.32
+        const mapX = c.pos_x / 0.32;
+        const mapY = (c.pos_y + 0.16) / 0.32;
+        
+        // Use floor to match backend pathfinding tile
+        const cx = Math.floor(mapX);
+        const cy = Math.floor(mapY);
+
+        const sx = dx + cx * scale + scale / 2;
+        const sy = dy + (minimap.height - cy - 1) * scale + scale / 2;
+
+        const isNugget = [4154, 4155, 4156, 4157, 4162].includes(c.block_type || 0);
+        ctx.fillStyle = isNugget ? "#facc15" : "#a855f7"; // yellow-400 for nuggets, purple-500 for gems
+        ctx.beginPath();
+        // Draw them slightly smaller than players so they look like dropped items
+        ctx.arc(sx, sy, Math.max(1.5, scale * 0.3), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = isNugget ? "#ca8a04" : "#7e22ce";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+
     // Draw Other Players with Lerp
     for (const op of otherPlayers) {
       if (op.position.map_x == null || op.position.map_y == null) continue
@@ -279,15 +307,15 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
     // Draw AI Enemies with Lerp
     const currentAiIds = new Set(aiEnemies.map(e => e.ai_id))
     for (const [id] of visualEnemiesRef.current) {
-        if (!currentAiIds.has(id)) visualEnemiesRef.current.delete(id)
+      if (!currentAiIds.has(id)) visualEnemiesRef.current.delete(id)
     }
 
     for (const enemy of aiEnemies) {
       if (!enemy.alive) continue
       let visual = visualEnemiesRef.current.get(enemy.ai_id)
       if (!visual) {
-          visual = { x: enemy.map_x, y: enemy.map_y }
-          visualEnemiesRef.current.set(enemy.ai_id, visual)
+        visual = { x: enemy.map_x, y: enemy.map_y }
+        visualEnemiesRef.current.set(enemy.ai_id, visual)
       }
       visual.x += (enemy.map_x - visual.x) * t
       visual.y += (enemy.map_y - visual.y) * t
@@ -308,7 +336,7 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
     const py = playerPosition.map_y
     if (px != null && py != null) {
       if (!visualPlayerRef.current) {
-          visualPlayerRef.current = { x: px, y: py }
+        visualPlayerRef.current = { x: px, y: py }
       }
       visualPlayerRef.current.x += (px - visualPlayerRef.current.x) * t
       visualPlayerRef.current.y += (py - visualPlayerRef.current.y) * t
@@ -330,7 +358,7 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       const ty = currentTarget.y
       const sx = dx + tx * scale + scale / 2
       const sy = dy + (minimap.height - ty - 1) * scale + scale / 2
-      
+
       const pulse = 1 + Math.sin(now / 200) * 0.2
       ctx.strokeStyle = "#10b981" // emerald-500
       ctx.lineWidth = 2
@@ -347,20 +375,20 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       ctx.lineTo(sx, sy + len)
       ctx.stroke()
     }
-  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers, currentTarget])
+  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers, currentTarget, collectables])
 
   const drawSceneRef = useRef(drawScene)
   drawSceneRef.current = drawScene
 
   // Animation Loop for smoothness
   useEffect(() => {
-      let frameId: number
-      const loop = () => {
-          drawSceneRef.current()
-          frameId = requestAnimationFrame(loop)
-      }
+    let frameId: number
+    const loop = () => {
+      drawSceneRef.current()
       frameId = requestAnimationFrame(loop)
-      return () => cancelAnimationFrame(frameId)
+    }
+    frameId = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(frameId)
   }, [])
 
   useEffect(() => {
@@ -430,7 +458,7 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       panY0: v.panY,
       moved: false,
     }
-    ;(e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
+      ; (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
   }, [])
 
   const onPointerMove = useCallback(
@@ -455,7 +483,7 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (dragRef.current) {
       try {
-        ;(e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId)
+        ; (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId)
       } catch {
         /* noop */
       }
@@ -518,7 +546,7 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
           <Crosshair className="size-3.5" />
           Target Intelligence
         </div>
-        
+
         {currentTarget ? (
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 p-3">
@@ -526,8 +554,8 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
               <div className="flex flex-col">
                 <span className="text-[10px] uppercase font-bold text-emerald-400/70">Current Action</span>
                 <span className="text-xs font-bold text-emerald-100 capitalize">
-                  {currentTarget.type === "collecting" && [4154, 4155, 4156, 4157, 4162].includes(currentTarget.block_id || 0) 
-                    ? "Nugget" 
+                  {currentTarget.type === "collecting"
+                    ? ([4154, 4155, 4156, 4157, 4162].includes(currentTarget.block_id || 0) ? "Nugget" : "Gem/Item")
                     : currentTarget.type}
                 </span>
               </div>

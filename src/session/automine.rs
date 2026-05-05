@@ -90,25 +90,29 @@ pub fn is_mineable(block_id: u16) -> bool {
     )
 }
 
-/// Is this a gemstone (higher priority targets)?
-pub fn is_gemstone(block_id: u16) -> bool {
+/// Is this a MineGem (higher priority targets)?
+pub fn is_minegem(block_id: u16) -> bool {
     matches!(
         block_id, 
-        // Legacy main world gemstones
-        20..=32 |
-        // MineWorld GemStones (3995-4003)
-        3995..=4003
+        // Legacy and MineWorld Gemstones
+        20..=32 | 3995..=4003
     )
 }
 
-/// Is this a nugget (highest priority)?
-pub fn is_nugget(block_id: u16) -> bool {
-    matches!(block_id, 4154..=4157 | 4162)
+pub fn is_common_terrain(block_id: u16) -> bool {
+    matches!(
+        block_id, 
+        3980..=3984 | // Soils
+        3985 | 3986 | 3989 | 3991 | 3992 | 3994 // Standard Rocks/Wood
+    )
 }
 
-/// Is this a crystal (lowest priority mineable)?
-pub fn is_crystal(block_id: u16) -> bool {
-    matches!(block_id, 3974..=3979)
+pub fn is_soil(block_id: u16) -> bool {
+    matches!(block_id, 3980..=3984)
+}
+
+pub fn is_mineable_target(block_id: u16) -> bool {
+    is_minegem(block_id) || is_common_terrain(block_id)
 }
 
 /// Collectible detection: build a cached set of block IDs that are "collectable".
@@ -129,7 +133,8 @@ fn collectible_ids() -> &'static HashSet<u16> {
                 let name = entry.get("name")?.as_str().unwrap_or("").to_lowercase();
                 let type_name = entry.get("typeName")?.as_str().unwrap_or("").to_lowercase();
 
-                if name.contains("collect") || name.contains("collectable") || type_name == "consumable" {
+                if name.contains("collect") || name.contains("collectable") || type_name == "consumable" 
+                   || matches!(id, 4154..=4162 | 4012..=4056) {
                     Some(id)
                 } else {
                     None
@@ -152,13 +157,13 @@ const MINING_GEM_END: u16 = 4003; // inclusive
 /// Heuristic: is this world a mining map? We detect presence of mining gemstones or portal tiles.
 pub fn is_mine_map(foreground_tiles: &[u16]) -> bool {
     foreground_tiles.iter().any(|&id| {
-        id == PORTAL_MINE_EXIT_ID || is_collectible(id) || (id >= MINING_GEM_START && id <= MINING_GEM_END)
+        id == PORTAL_MINE_EXIT_ID || (id >= MINING_GEM_START && id <= MINING_GEM_END)
     })
 }
 
 /// Return true when there are no more collectible/mining gem tiles in the provided foreground.
 pub fn all_collectibles_cleared(foreground_tiles: &[u16]) -> bool {
-    !foreground_tiles.iter().any(|&id| is_collectible(id) || (id >= MINING_GEM_START && id <= MINING_GEM_END))
+    !foreground_tiles.iter().any(|&id| id >= MINING_GEM_START && id <= MINING_GEM_END)
 }
 
 /// Find the exit gate (portal) coordinates in the foreground tiles, if present.
@@ -182,46 +187,131 @@ pub fn find_exit_gate(
 
 /// Scan the world snapshot for nearby mineable targets.
 /// Prefer gemstones closest to the player.
-pub fn find_best_target(
+///
+/// `allow_crystals` controls whether crystal blocks (3974..=3979) are eligible.
+/// Crystals aren't valuable enough to target every tick — the caller throttles
+/// them by passing `false` until enough non-crystal tiles have been broken
+/// (default cadence: 1 crystal per 5 successful breaks).
+pub fn find_all_targets(
     player_map_x: i32,
     player_map_y: i32,
     world_width: u32,
     world_height: u32,
     foreground_tiles: &[u16],
-) -> Option<(i32, i32)> {
-    let mut best_target: Option<(i32, i32, u16, i32)> = None; // (x, y, block_id, distance_sq)
+) -> Vec<(i32, i32)> {
+    let mut targets = Vec::new();
+    let search_radius = 50; // reasonable radius for unified scanning
 
-    let search_radius = 255; // Search the entire world
-    let min_x = 0;
-    let max_x = world_width as i32 - 1;
-    let min_y = 0;
-    let max_y = world_height as i32 - 1;
+    let min_x = (player_map_x - search_radius).max(0);
+    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
+    let min_y = (player_map_y - search_radius).max(0);
+    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
 
-    // Prefer collectibles first (user requested). Fall back to legacy mineable IDs.
     for x in min_x..=max_x {
         for y in min_y..=max_y {
             let index = (y as u32 * world_width + x as u32) as usize;
             if let Some(&block_id) = foreground_tiles.get(index) {
-                if block_id != 0 && (is_collectible(block_id) || is_mineable(block_id)) {
-                    let dx = (x - player_map_x) as i32;
-                    let dy = (y - player_map_y) as i32;
-                    let dist_sq = dx * dx + dy * dy;
+                if block_id != 0 {
+                    let is_mineable = is_mineable_target(block_id);
+                    
+                    if is_mineable {
+                        targets.push((x, y));
+                    }
+                }
+            }
+        }
+    }
+    targets
+}
+
+pub fn find_best_bot_target(
+    player_map_x: i32,
+    player_map_y: i32,
+    world_width: u32,
+    world_height: u32,
+    foreground_tiles: &[u16],
+    collectables: &std::collections::HashMap<i32, crate::session::CollectableState>,
+    ai_enemies: &std::collections::HashMap<i32, crate::session::AiEnemyState>,
+) -> Option<crate::models::BotTarget> {
+    // 1. Priority: Collectibles (Floor items)
+    let mut best_collectible: Option<(i32, u32)> = None; // (id, dist_sq)
+    for (&id, state) in collectables {
+        let dx = state.map_x - player_map_x;
+        let dy = state.map_y - player_map_y;
+        let dist_sq = (dx * dx + dy * dy) as u32;
+        
+        if best_collectible.is_none() || dist_sq < best_collectible.unwrap().1 {
+            best_collectible = Some((id, dist_sq));
+        }
+    }
+    
+    if let Some((id, _)) = best_collectible {
+        let state = collectables.get(&id).unwrap();
+        return Some(crate::models::BotTarget::Collecting {
+            id,
+            block_id: state.block_type as u16,
+            x: state.map_x,
+            y: state.map_y,
+        });
+    }
+
+    // 2. Priority: High-Value Gemstones
+    let mut best_gem: Option<(i32, i32, u32)> = None;
+    for y in 0..world_height as i32 {
+        for x in 0..world_width as i32 {
+            let index = (y as u32 * world_width + x as u32) as usize;
+            if let Some(&block_id) = foreground_tiles.get(index) {
+                if is_minegem(block_id) {
+                    let dx = x - player_map_x;
+                    let dy = y - player_map_y;
+                    let dist_sq = (dx * dx + dy * dy) as u32;
+                    if best_gem.is_none() || dist_sq < best_gem.unwrap().2 {
+                        best_gem = Some((x, y, dist_sq));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((x, y, _)) = best_gem {
+        return Some(crate::models::BotTarget::Mining { x, y });
+    }
+
+    // 3. Priority: Common Terrain (Rocks/Soil) to clear path
+    let mut best_terrain: Option<(i32, i32, u32)> = None;
+    for y in 0..world_height as i32 {
+        for x in 0..world_width as i32 {
+            let index = (y as u32 * world_width + x as u32) as usize;
+            if let Some(&block_id) = foreground_tiles.get(index) {
+                if is_common_terrain(block_id) {
+                    let dx = x - player_map_x;
+                    let dy = y - player_map_y;
+                    let dist_sq = (dx * dx + dy * dy) as u32;
+                    if best_terrain.is_none() || dist_sq < best_terrain.unwrap().2 {
+                        best_terrain = Some((x, y, dist_sq));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((x, y, _)) = best_terrain {
+        return Some(crate::models::BotTarget::Mining { x, y });
+    }
+
+    None
+}
 
                     let is_better = match best_target {
                         None => true,
                         Some((_, _, prev_id, prev_dist)) => {
-                            // Priority Ranking: 
-                            // 1. Nuggets (4)
-                            // 2. Other Collectibles (3)
-                            // 3. Gemstones (2)
-                            // 4. Crystals (1)
-                            // 5. Others (0)
-                            
+                            // Priority of WORLD TILES:
+                            //   2 = MineGems (3995..=4003) — Top Priority
+                            //   1 = Junk (All other mineable blocks)
+                            //
                             let rank = |id: u16| -> i32 {
-                                if is_nugget(id) { 4 }
-                                else if is_collectible(id) { 3 }
-                                else if is_gemstone(id) { 2 }
-                                else if is_crystal(id) { 1 }
+                                if is_minegem(id) { 2 }
+                                else if is_common_terrain(id) { 1 }
                                 else { 0 }
                             };
 
