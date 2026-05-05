@@ -3,3 +3,4 @@ dist
 *.py
 user.json
 *.bin
+*.log
