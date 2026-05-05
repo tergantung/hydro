@@ -17,6 +17,36 @@ export type AuthInput =
       device_id: string | null
     }
 
+export type BotTarget =
+  | {
+      type: "mining"
+      x: number
+      y: number
+    }
+  | {
+      type: "collecting"
+      id: number
+      x: number
+      y: number
+    }
+  | {
+      type: "fighting"
+      ai_id: number
+      x: number
+      y: number
+    }
+  | {
+      type: "moving"
+      x: number
+      y: number
+    }
+  | {
+      type: "fishing"
+      x: number
+      y: number
+    }
+
+
 export type SessionStatus =
   | "idle"
   | "connecting"
@@ -71,6 +101,7 @@ export type SessionSnapshot = {
   other_players: RemotePlayerSnapshot[]
   last_error: string | null
   ping_ms: number | null
+  current_target: BotTarget | null
 }
 
 export type MinimapSnapshot = {

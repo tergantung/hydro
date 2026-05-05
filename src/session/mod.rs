@@ -23,7 +23,7 @@ use crate::constants::{fishing, movement, network, protocol as ids, timing, tuto
 use crate::logging::{Direction, Logger};
 use crate::lua_runtime::{self, LuaScriptHandle};
 use crate::models::{
-    AuthInput, InventoryItem, LuaCollectableSnapshot, LuaGrowingTileSnapshot,
+    AuthInput, BotTarget, InventoryItem, LuaCollectableSnapshot, LuaGrowingTileSnapshot,
     LuaScriptStatusSnapshot, LuaTileSnapshot, LuaWorldObjectsSnapshot, LuaWorldSnapshot,
     LuaWorldSpawnSnapshot, LuaWorldTilesSnapshot, MinimapSnapshot, PlayerPosition,
     RemotePlayerSnapshot, SessionSnapshot, SessionStatus, TileCount, WorldSnapshot,
@@ -202,6 +202,7 @@ impl BotSession {
             ping_ms: None,
             collect_cooldowns: CollectCooldowns::default(),
             rate_limit_until: None,
+            current_target: None,
         }));
 
         let session = Arc::new(Self {
@@ -256,6 +257,7 @@ impl BotSession {
             }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
+            current_target: state.current_target.clone(),
         }
     }
 
@@ -1101,6 +1103,7 @@ impl BotSession {
                     }
                     SessionCommand::StopFishing => {
                         stop_background_worker(&mut fishing_stop_tx);
+                        self.state.write().await.current_target = None;
                         if let Some(active) = &runtime {
                             let _ = send_doc(
                                 &active.outbound_tx,
@@ -1184,6 +1187,7 @@ impl BotSession {
                     }
                     SessionCommand::StopAutomine => {
                         stop_background_worker(&mut automine_stop_tx);
+                        self.state.write().await.current_target = None;
                     }
                     SessionCommand::DropItem {
                         block_id,
@@ -2782,6 +2786,7 @@ struct SessionState {
     ping_ms: Option<u32>,
     collect_cooldowns: CollectCooldowns,
     rate_limit_until: Option<Instant>,
+    current_target: Option<BotTarget>,
 }
 
 #[derive(Debug)]
@@ -3682,6 +3687,34 @@ async fn automine_loop(
                 // 3. Update sticky target state
                 sticky_target = target.as_ref().map(|(tx, ty, is_col, cid, _)| (*tx, *ty, *is_col, *cid));
 
+                // Sync current targeting state to the UI
+                {
+                    let mut st = state.write().await;
+                    if let Some((ex, ey, ai_id)) = closest_enemy {
+                        st.current_target = Some(BotTarget::Fighting {
+                            ai_id,
+                            x: ex,
+                            y: ey,
+                        });
+                    } else if let Some((tx, ty, is_col, cid, _)) = &target {
+                        st.current_target = Some(if *is_col {
+                            BotTarget::Collecting {
+                                id: cid.unwrap(),
+                                x: *tx,
+                                y: *ty,
+                            }
+                        } else {
+                            BotTarget::Mining {
+                                x: *tx,
+                                y: *ty,
+                            }
+                        });
+                    } else {
+                        st.current_target = None;
+                    }
+                }
+                publish_state_snapshot(_logger, _session_id, state).await;
+
                 match target {
                     Some((target_x, target_y, is_collectable, opt_cid, opt_path)) => {
                         if is_collectable {
@@ -3855,6 +3888,10 @@ async fn fishing_loop(
             session.fishing.target_map_y = Some(target.map_y);
             session.fishing.bait_name = Some(bait.name.clone());
             session.fishing.last_result = None;
+            session.current_target = Some(BotTarget::Fishing {
+                x: target.map_x,
+                y: target.map_y,
+            });
         }
         publish_state_snapshot(logger, session_id, state).await;
 
@@ -6196,6 +6233,7 @@ async fn publish_state_snapshot(
             }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
+            current_target: state.current_target.clone(),
         }
     };
     logger.session_snapshot(snapshot);
@@ -6270,6 +6308,7 @@ async fn set_local_map_position(
             }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
+            current_target: state.current_target.clone(),
         }
     };
     logger.session_snapshot(snapshot);
@@ -6331,6 +6370,7 @@ async fn set_local_world_position(
             }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
+            current_target: state.current_target.clone(),
         }
     };
     logger.session_snapshot(snapshot);

@@ -827,16 +827,17 @@ function App() {
                           <div className="grid gap-3 xl:grid-cols-[minmax(320px,1.15fr)_minmax(320px,.85fr)]">
                             <div className="grid gap-3">
                                 <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                                <Waves className="size-3.5" />
-                                Minimap & Spatial Position
-                              </div>
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Waves className="size-3.5" />
+                                  Minimap & Spatial Position
+                                </div>
                             <MinimapPanel
                               minimap={minimap}
                               aiEnemies={session.ai_enemies}
                               otherPlayers={session.other_players}
                               playerPosition={session.player_position}
                               currentWorld={session.current_world}
+                              currentTarget={session.current_target}
                               onHoverChange={getHoverChange(session.id)}
                             />
                             <div className="text-xs text-muted-foreground">

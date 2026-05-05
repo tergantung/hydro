@@ -1,7 +1,8 @@
+import { Crosshair, Target } from "@phosphor-icons/react"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 
 import { minimapColor } from "@/lib/dashboard"
-import type { AiEnemySnapshot, MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot } from "@/lib/types"
+import type { AiEnemySnapshot, BotTarget, MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot } from "@/lib/types"
 import { getAtlas, peekAtlas, type AtlasBundle } from "@/lib/atlas"
 
 type Props = {
@@ -10,6 +11,7 @@ type Props = {
   aiEnemies: AiEnemySnapshot[]
   otherPlayers: RemotePlayerSnapshot[]
   currentWorld: string | null
+  currentTarget: BotTarget | null
   onHoverChange: (value: string) => void
 }
 
@@ -77,7 +79,7 @@ interface EntityVisual {
   y: number
 }
 
-function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, onHoverChange }: Props) {
+function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, currentTarget, onHoverChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const tileLayerRef = useRef<HTMLCanvasElement | null>(null)
   const atlasImgRef = useRef<HTMLImageElement | null>(null)
@@ -321,7 +323,31 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       ctx.lineWidth = 1
       ctx.stroke()
     }
-  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers])
+
+    // Draw Current Target
+    if (currentTarget && minimap) {
+      const tx = currentTarget.x
+      const ty = currentTarget.y
+      const sx = dx + tx * scale + scale / 2
+      const sy = dy + (minimap.height - ty - 1) * scale + scale / 2
+      
+      const pulse = 1 + Math.sin(now / 200) * 0.2
+      ctx.strokeStyle = "#10b981" // emerald-500
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(sx, sy, scale * 0.8 * pulse, 0, Math.PI * 2)
+      ctx.stroke()
+
+      // Crosshair lines
+      const len = scale * 0.5
+      ctx.beginPath()
+      ctx.moveTo(sx - len, sy)
+      ctx.lineTo(sx + len, sy)
+      ctx.moveTo(sx, sy - len)
+      ctx.lineTo(sx, sy + len)
+      ctx.stroke()
+    }
+  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers, currentTarget])
 
   const drawSceneRef = useRef(drawScene)
   drawSceneRef.current = drawScene
@@ -468,22 +494,72 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
   }, [])
 
   return (
-    <div className="relative h-80 overflow-hidden rounded-2xl border border-white/10 bg-[#081018]">
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 h-full w-full cursor-crosshair"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerLeave={onPointerLeave}
-        style={{ touchAction: "none" }}
-      />
-      {!minimap && (
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-          No minimap yet.
+    <div className="relative flex h-80 overflow-hidden rounded-2xl border border-white/10 bg-[#081018]">
+      <div className="relative flex-1 overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 h-full w-full cursor-crosshair"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerLeave={onPointerLeave}
+          style={{ touchAction: "none" }}
+        />
+        {!minimap && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+            No minimap yet.
+          </div>
+        )}
+      </div>
+
+      <div className="w-64 border-l border-white/10 bg-black/40 p-4 backdrop-blur-md flex flex-col gap-4">
+        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+          <Crosshair className="size-3.5" />
+          Target Intelligence
         </div>
-      )}
+        
+        {currentTarget ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 p-3">
+              <Target className="size-5 text-emerald-400 animate-pulse" />
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase font-bold text-emerald-400/70">Current Action</span>
+                <span className="text-xs font-bold text-emerald-100 capitalize">{currentTarget.type}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col rounded-xl bg-white/5 border border-white/10 p-2">
+                <span className="text-[9px] uppercase font-bold text-muted-foreground">Map X</span>
+                <span className="text-xs font-mono font-bold text-white">{currentTarget.x}</span>
+              </div>
+              <div className="flex flex-col rounded-xl bg-white/5 border border-white/10 p-2">
+                <span className="text-[9px] uppercase font-bold text-muted-foreground">Map Y</span>
+                <span className="text-xs font-mono font-bold text-white">{currentTarget.y}</span>
+              </div>
+            </div>
+
+            {currentTarget.type === "collecting" && (
+              <div className="flex flex-col rounded-xl bg-white/5 border border-white/10 p-2">
+                <span className="text-[9px] uppercase font-bold text-muted-foreground">Entity ID</span>
+                <span className="text-xs font-mono font-bold text-white">#{currentTarget.id}</span>
+              </div>
+            )}
+            {currentTarget.type === "fighting" && (
+              <div className="flex flex-col rounded-xl bg-white/5 border border-white/10 p-2">
+                <span className="text-[9px] uppercase font-bold text-muted-foreground">AI Enemy ID</span>
+                <span className="text-xs font-mono font-bold text-white">#{currentTarget.ai_id}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 opacity-50">
+            <div className="size-8 rounded-full border-2 border-dashed border-white/20 animate-spin-slow" />
+            <span className="text-[10px] uppercase font-bold text-muted-foreground">Waiting for target...</span>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -498,6 +574,7 @@ export const MinimapPanel = memo(MinimapPanelImpl, (prev, next) => {
     prev.playerPosition.world_x === next.playerPosition.world_x &&
     prev.playerPosition.world_y === next.playerPosition.world_y &&
     prev.aiEnemies === next.aiEnemies &&
-    prev.otherPlayers === next.otherPlayers
+    prev.otherPlayers === next.otherPlayers &&
+    prev.currentTarget === next.currentTarget
   )
 })

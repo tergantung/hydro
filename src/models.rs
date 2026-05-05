@@ -183,6 +183,16 @@ pub struct LuaWorldSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BotTarget {
+    Mining { x: i32, y: i32 },
+    Collecting { id: i32, x: i32, y: i32 },
+    Fighting { ai_id: i32, x: i32, y: i32 },
+    Moving { x: i32, y: i32 },
+    Fishing { x: i32, y: i32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub id: String,
     pub status: SessionStatus,
@@ -200,6 +210,7 @@ pub struct SessionSnapshot {
     pub other_players: Vec<RemotePlayerSnapshot>,
     pub last_error: Option<String>,
     pub ping_ms: Option<u32>,
+    pub current_target: Option<BotTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
