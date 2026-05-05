@@ -10,6 +10,7 @@ dependencies = [
  "axum",
  "bson",
  "dashmap",
+ "hex",
  "mlua",
  "parking_lot",
  "rand 0.10.0",

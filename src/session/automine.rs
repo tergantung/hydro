@@ -234,11 +234,23 @@ pub fn find_best_bot_target(
     ai_enemies: &std::collections::HashMap<i32, crate::session::AiEnemyState>,
 ) -> Option<crate::models::BotTarget> {
     // 1. Priority: Collectibles (Floor items)
-    let mut best_collectible: Option<(i32, u32)> = None; // (id, dist_sq)
+    let mut best_collectible: Option<(i32, u32)> = None; 
     for (&id, state) in collectables {
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
+
+        // Enemy proximity check: Avoid items too close to enemies
+        let mut near_enemy = false;
+        for enemy in ai_enemies.values() {
+            let e_dx = state.map_x - enemy.map_x;
+            let e_dy = state.map_y - enemy.map_y;
+            if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
+                near_enemy = true;
+                break;
+            }
+        }
+        if near_enemy { continue; }
         
         if best_collectible.is_none() || dist_sq < best_collectible.unwrap().1 {
             best_collectible = Some((id, dist_sq));
@@ -283,7 +295,7 @@ pub fn find_best_bot_target(
         for x in 0..world_width as i32 {
             let index = (y as u32 * world_width + x as u32) as usize;
             if let Some(&block_id) = foreground_tiles.get(index) {
-                if is_common_terrain(block_id) {
+                if is_mineable(block_id) {
                     let dx = x - player_map_x;
                     let dy = y - player_map_y;
                     let dist_sq = (dx * dx + dy * dy) as u32;
@@ -302,42 +314,6 @@ pub fn find_best_bot_target(
     None
 }
 
-                    let is_better = match best_target {
-                        None => true,
-                        Some((_, _, prev_id, prev_dist)) => {
-                            // Priority of WORLD TILES:
-                            //   2 = MineGems (3995..=4003) — Top Priority
-                            //   1 = Junk (All other mineable blocks)
-                            //
-                            let rank = |id: u16| -> i32 {
-                                if is_minegem(id) { 2 }
-                                else if is_common_terrain(id) { 1 }
-                                else { 0 }
-                            };
-
-                            let current_rank = rank(block_id);
-                            let prev_rank = rank(prev_id);
-
-                            if current_rank > prev_rank {
-                                true
-                            } else if current_rank < prev_rank {
-                                false
-                            } else {
-                                dist_sq < prev_dist
-                            }
-                        }
-                    };
-
-                    if is_better {
-                        best_target = Some((x, y, block_id, dist_sq));
-                    }
-                }
-            }
-        }
-    }
-
-    best_target.map(|(x, y, _, _)| (x, y))
-}
 
 /// Check if we can reach a target via pathfinding.
 pub fn can_reach_target(
