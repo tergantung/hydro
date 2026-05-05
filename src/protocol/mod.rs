@@ -578,11 +578,10 @@ pub fn make_movement_packet(
 ///
 /// The `_anim` parameter is kept for source compatibility but ignored —
 /// the protocol fixes the animation values per packet.
-pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
-    let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
+pub fn make_move_to_map_point(_player_x: i32, _player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
     let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
     vec![
-        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
+        make_movement_packet(new_world_x, new_world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
     ]

@@ -255,7 +255,16 @@ pub fn find_best_bot_target(
         }
         if near_enemy { continue; }
 
-        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+        // Collectibles get a massive priority boost (perceived distance / 4)
+        // so the bot clears the floor before mining more.
+        // nWC packets (new world drops) get an even higher boost (/16).
+        let priority_dist = if state.is_nwc {
+            dist_sq / 16
+        } else {
+            dist_sq / 4
+        };
+
+        if best_target.is_none() || priority_dist < best_target.as_ref().unwrap().1 {
             best_target = Some((
                 crate::models::BotTarget::Collecting {
                     id,
@@ -263,7 +272,7 @@ pub fn find_best_bot_target(
                     x: state.map_x,
                     y: state.map_y,
                 },
-                dist_sq
+                priority_dist
             ));
         }
     }

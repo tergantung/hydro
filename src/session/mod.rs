@@ -198,6 +198,7 @@ impl BotSession {
             awaiting_ready: false,
             tutorial_spawn_pod_confirmed: false,
             tutorial_automation_running: false,
+            pending_hits: HashMap::new(),
             tutorial_phase4_acknowledged: false,
             fishing: FishingAutomationState::default(),
             ping_ms: None,
@@ -1463,7 +1464,10 @@ impl BotSession {
                 self.apply_destroy_block_message(&message).await;
             }
             ids::PACKET_ID_NEW_COLLECTABLE | ids::PACKET_ID_COLLECTABLE_REQUEST => {
-                self.track_collectable(&message).await;
+                self.track_collectable(&message, false).await;
+            }
+            ids::PACKET_ID_NEW_WORLD_COLLECTABLE => {
+                self.track_collectable(&message, true).await;
             }
             ids::PACKET_ID_AI_HIT_DAMAGE => {
                 self.track_ai_enemy(&message).await;
@@ -1509,15 +1513,40 @@ impl BotSession {
                 }
             }
             ids::PACKET_ID_JOIN_WORLD => {
-                let denied = message.get_i32("JR").unwrap_or_default() != 0;
-                if denied {
-                    let err = message
-                        .get_str("E")
-                        .or_else(|_| message.get_str("Err"))
-                        .unwrap_or("join denied");
-                    self.logger
-                        .warn("session", Some(&self.id), format!("TTjW denied: {err}"));
-                    self.set_error(format!("TTjW denied: {err}")).await;
+                let jr = message.get_i32("JR").unwrap_or_default();
+                if jr != 0 {
+                    let mut retry_triggered = false;
+                    if jr == 8 {
+                        // JR: 8 is "Server Full". Trigger a shard-hopping retry.
+                        let (world, retry_count) = {
+                            let mut state = self.state.write().await;
+                            state.serverfull_retries = state.serverfull_retries.saturating_add(1);
+                            (state.pending_world.clone(), state.serverfull_retries)
+                        };
+
+                        const SERVERFULL_RETRY_LIMIT: u32 = 30;
+                        if retry_count <= SERVERFULL_RETRY_LIMIT {
+                            if let Some(world) = world {
+                                self.logger.info("session", Some(&self.id), 
+                                    format!("JR: 8 (Server Full) detected. Manually retrying shard #{retry_count} for {world}"));
+                                let _ = send_doc(
+                                    &runtime.outbound_tx,
+                                    protocol::make_join_world_retry(&world, retry_count as i32),
+                                ).await;
+                                retry_triggered = true;
+                            }
+                        }
+                    }
+
+                    if !retry_triggered {
+                        let err = message
+                            .get_str("E")
+                            .or_else(|_| message.get_str("Err"))
+                            .unwrap_or_else(|_| if jr == 8 { "server full" } else { "join denied" });
+                        self.logger
+                            .warn("session", Some(&self.id), format!("TTjW denied (JR={jr}): {err}"));
+                        self.set_error(format!("TTjW denied: {err}")).await;
+                    }
                 } else {
                     let world = message
                         .get_str("WN")
@@ -1590,6 +1619,7 @@ impl BotSession {
                                     map_y: my.floor() as i32,
                                     is_gem: c.is_gem,
                                     gem_type: c.gem_type,
+                                    is_nwc: false,
                                 });
                             }
 
@@ -1633,6 +1663,14 @@ impl BotSession {
                 self.update_status(SessionStatus::AwaitingReady, None).await;
             }
             ids::PACKET_ID_R_AI => {
+                let ai_id = message.get_i32("AId").ok(); // Is it an i32 or a blob?
+                self.logger.info("session", Some(&self.id), format!("rAI packet: ai_id={:?} full={}", ai_id, protocol::log_message(&message)));
+                
+                if let Some(id) = ai_id {
+                    let mut state = self.state.write().await;
+                    state.ai_enemies.remove(&id);
+                }
+
                 let (should_ready, tutorial_phase_owned) = {
                     let mut state = self.state.write().await;
                     let tutorial_phase_owned = state.tutorial_automation_running
@@ -2034,6 +2072,7 @@ impl BotSession {
         let changed = {
             let mut state = self.state.write().await;
             state.growing_tiles.remove(&(map_x, map_y));
+            state.pending_hits.remove(&(map_x, map_y));
             apply_destroy_block_change(&mut state, map_x, map_y)
         };
         if changed {
@@ -2081,10 +2120,28 @@ impl BotSession {
     }
 
     async fn apply_inventory_update(&self, message: &Document) {
-        let Ok(inventory_key) = message.get_i32("Bi") else { return; };
-        let amount = message.get_i32("Amt").unwrap_or_default() as u16;
-        let block_id = message.get_i32("BT").unwrap_or_default() as u16;
-        let inventory_type = message.get_i32("IT").unwrap_or_default() as u16;
+        let get_u16 = |key: &str| -> u16 {
+            message.get(key)
+                .and_then(|v| v.as_i64().map(|i| i as u16)
+                .or_else(|| v.as_f64().map(|f| f as u16)))
+                .unwrap_or_default()
+        };
+        let get_i32 = |key: &str| -> Option<i32> {
+            message.get(key)
+                .and_then(|v| v.as_i64().map(|i| i as i32)
+                .or_else(|| v.as_f64().map(|f| f as i32)))
+        };
+
+        let Some(inventory_key) = get_i32("Bi") else { 
+            self.logger.warn("session", Some(&self.id), format!("InventoryUpdate missing Bi: {}", protocol::log_message(message)));
+            return; 
+        };
+        let amount = get_u16("Amt");
+        let block_id = get_u16("BT");
+        let inventory_type = get_u16("IT");
+
+        self.logger.info("session", Some(&self.id), 
+            format!("InventoryUpdate: key={} block_id={} amount={} type={}", inventory_key, block_id, amount, inventory_type));
 
         let mut state = self.state.write().await;
         if amount == 0 {
@@ -2094,6 +2151,7 @@ impl BotSession {
                 entry.amount = amount;
                 entry.block_id = block_id;
                 entry.inventory_type = inventory_type;
+                self.logger.info("session", Some(&self.id), format!("Updated existing inventory entry for key={}", inventory_key));
             } else {
                 state.inventory.push(InventoryEntry {
                     inventory_key,
@@ -2101,13 +2159,19 @@ impl BotSession {
                     inventory_type,
                     amount,
                 });
+                self.logger.info("session", Some(&self.id), format!("Created new inventory entry for key={}", inventory_key));
             }
         }
+        drop(state);
+        self.publish_snapshot().await;
     }
 
-    async fn track_collectable(&self, message: &Document) {
+    async fn track_collectable(&self, message: &Document, is_nwc: bool) {
+        self.logger.info("session", Some(&self.id), format!("COLLECTABLE PACKET: {}", protocol::log_message(message)));
 
-        let Some(collectable_id) = message.get_i32("CollectableID").ok() else {
+        let Some(collectable_id) = message.get_i32("CollectableID").ok()
+            .or_else(|| message.get_i32("id").ok())
+            .or_else(|| message.get_i32("cid").ok()) else {
             return;
         };
 
@@ -2126,6 +2190,7 @@ impl BotSession {
             map_y: my.floor() as i32,
             is_gem: message.get_bool("IsGem").unwrap_or(false),
             gem_type: message.get_i32("GemType").unwrap_or_default(),
+            is_nwc,
         };
 
         self.state
@@ -2214,8 +2279,8 @@ impl BotSession {
         // Observed types: 4=Spawn, 1=Move/Update?
         let event_type = blob[12];
         if event_type != 4 {
-            if blob.len() == 37 && (event_type == 1 || event_type == 2) {
-                // Potential movement update. structure might match spawn.
+            // Event types: 1=Move, 2=Update/Hit, 4=Spawn, 6=Death/Removal?
+            if blob.len() >= 26 && (event_type == 1 || event_type == 2) {
                 let ai_id = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
                 let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
                 let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
@@ -2230,6 +2295,14 @@ impl BotSession {
                     return;
                 }
             }
+
+            if event_type == 6 {
+                let ai_id = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
+                let mut state = self.state.write().await;
+                state.ai_enemies.remove(&ai_id);
+                return;
+            }
+
             // Log other event types for analysis
             self.logger.info("session", Some(&self.id), 
                 format!("AI packet event_type={} len={} hex={}", event_type, blob.len(), hex::encode(blob)));
@@ -2862,6 +2935,9 @@ struct SessionState {
     awaiting_ready: bool,
     tutorial_spawn_pod_confirmed: bool,
     tutorial_automation_running: bool,
+    /// Tiles we've hit and are waiting for a DB (Destroy Block) confirmation.
+    /// Maps (x, y) to the Instant of the LAST hit.
+    pending_hits: HashMap<(i32, i32), Instant>,
     tutorial_phase4_acknowledged: bool,
     fishing: FishingAutomationState,
     ping_ms: Option<u32>,
@@ -2942,17 +3018,18 @@ struct AiEnemyState {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct CollectableState {
-    collectable_id: i32,
-    block_type: i32,
-    amount: i32,
-    inventory_type: i32,
-    pos_x: f64,
-    pos_y: f64,
-    map_x: i32,
-    map_y: i32,
-    is_gem: bool,
-    gem_type: i32,
+pub(crate) struct CollectableState {
+    pub(crate) collectable_id: i32,
+    pub(crate) block_type: i32,
+    pub(crate) amount: i32,
+    pub(crate) inventory_type: i32,
+    pub(crate) pos_x: f64,
+    pub(crate) pos_y: f64,
+    pub(crate) map_x: i32,
+    pub(crate) map_y: i32,
+    pub(crate) is_gem: bool,
+    pub(crate) gem_type: i32,
+    pub(crate) is_nwc: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3526,8 +3603,8 @@ async fn automine_loop(
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    // Increased to 650ms for safer movement margins to avoid speed-hack kicks.
-    let mut tick = interval(Duration::from_millis(650));
+    // Increased to 800ms for high-ping stability and to avoid fast-hit detections.
+    let mut tick = interval(Duration::from_millis(800));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     // Equip a pickaxe once per session and re-equip after losing it. Without
@@ -3539,7 +3616,7 @@ async fn automine_loop(
     // server confirming destruction (DB packet → foreground tile zeroed),
     // the tile is considered a dead-end and excluded from target search.
     // Matches Seraph's "tunnel-dig failed: did not break in 15 retries".
-    const MAX_TILE_ATTEMPTS: u32 = 15;
+    const MAX_TILE_ATTEMPTS: u32 = 8;
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
@@ -3735,7 +3812,7 @@ async fn automine_loop(
                 // moved on by the time the path completed.
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 {
-                    const COLLECT_RADIUS: i32 = 1; // map tiles
+                    const COLLECT_RADIUS: i32 = 2; // map tiles
                     let to_collect: Vec<i32> = {
                         let st = state.read().await;
                         st.collectables
@@ -3840,11 +3917,7 @@ async fn automine_loop(
                 // Sync current targeting state to the UI.
                 {
                     let mut st = state.write().await;
-                    if let Some((ex, ey, ai_id)) = closest_enemy {
-                        st.current_target = Some(BotTarget::Fighting { ai_id, x: ex, y: ey });
-                    } else {
-                        st.current_target = target.as_ref().map(|(t, _)| t.clone());
-                    }
+                    st.current_target = target.as_ref().map(|(t, _)| t.clone());
                 }
 
                 match target {
@@ -3886,12 +3959,29 @@ async fn automine_loop(
                                     let is_moving_down = next_step.1 > player_y;
 
                                     if move_blocked {
+                                        // Check if we already hit this tile and are waiting for a DB packet
+                                        let is_pending = {
+                                            let st = state.read().await;
+                                            st.pending_hits.get(&(next_step.0, next_step.1))
+                                                .map(|last| last.elapsed() < Duration::from_millis(1500))
+                                                .unwrap_or(false)
+                                        };
+
+                                        if is_pending {
+                                            // _logger.info("automine", Some(&_session_id), format!("STABILITY: Waiting for DB at ({}, {})", next_step.0, next_step.1));
+                                            continue; // Skip this tick to wait for server confirmation
+                                        }
+
+                                        // Check if THIS blocking tile is a dead-end
+                                        if tile_attempts.get(&(next_step.0, next_step.1)).copied().unwrap_or(0) >= MAX_TILE_ATTEMPTS {
+                                            // This path is permanently blocked. Mark the FINAL target as a dead-end too
+                                            // so we pick something else.
+                                            tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
+                                            continue;
+                                        }
+
                                         // Respect the DB (Destroy Block) packet: 
                                         // If the path is blocked, we STAY STILL and hit.
-                                        // Do not optimistic-move into the tile.
-                                        let anim = movement::ANIM_HIT_MOVE;
-
-                                        // _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
                                             player_x, player_y, // Do not move INTO the solid block
@@ -3902,6 +3992,11 @@ async fn automine_loop(
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
+
+                                        {
+                                            let mut st = state.write().await;
+                                            st.pending_hits.insert((next_step.0, next_step.1), Instant::now());
+                                        }
                                     } else {
                                         // Pure movement: pick the anim that physically describes
                                         // this single-tile transition.
@@ -5974,6 +6069,7 @@ mod tests {
             world_background_tiles: background_tiles,
             world_water_tiles: Vec::new(),
             world_wiring_tiles: Vec::new(),
+            pending_hits: HashMap::new(),
             current_outbound_tx: None,
             growing_tiles: HashMap::new(),
             player_position: PlayerPosition {

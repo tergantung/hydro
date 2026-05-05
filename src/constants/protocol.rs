@@ -57,4 +57,4 @@ pub const PACKET_ID_FISHING_RESULT: &str = "MGC";
 pub const PACKET_ID_KICK_ERROR: &str = "KErr";
 pub const PACKET_ID_DROP_ITEM: &str = "Di";
 pub const PACKET_ID_INVENTORY_UPDATE: &str = "I";
-
+pub const PACKET_ID_NEW_WORLD_COLLECTABLE: &str = "nWC";
