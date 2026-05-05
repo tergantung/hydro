@@ -92,11 +92,9 @@ pub fn is_mineable(block_id: u16) -> bool {
 
 /// Is this a MineGem (higher priority targets)?
 pub fn is_minegem(block_id: u16) -> bool {
-    matches!(
-        block_id, 
-        // Legacy and MineWorld Gemstones
-        20..=32 | 3995..=4003
-    )
+    // Only actual Gemstone BLOCKS that can be mined
+    (block_id >= 3995 && block_id <= 4003) || 
+    (block_id >= 4101 && block_id <= 4102)
 }
 
 pub fn is_common_terrain(block_id: u16) -> bool {
@@ -235,9 +233,10 @@ pub fn find_best_bot_target(
 ) -> Option<crate::models::BotTarget> {
     let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
 
-    // --- PHASE 1: HIGH-VALUE TARGETS (Collectibles & Gemstones) ---
-
-    // Scan Collectibles
+    // --- PHASE 1: TARGETING (Gems, Stones, Nuggets, Collectibles) ---
+    // All these targets have equal "level" - nearest wins.
+    
+    // 1. Scan Collectibles (Items on floor)
     for (&id, state) in collectables {
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
@@ -255,20 +254,7 @@ pub fn find_best_bot_target(
         }
         if near_enemy { continue; }
 
-        // Collectibles priority:
-        // - Rare items (Gems 4012-4056, nWC, and High-Value Nuggets 4155-4162): Extreme boost (dist_sq / 10000)
-        // - Standard items (Bronze Nuggets 4154, etc): No boost (dist_sq)
-        let is_rare_gem = state.is_gem || (state.block_type >= 4012 && state.block_type <= 4056);
-        let is_rare_nugget = (state.block_type >= 4155 && state.block_type <= 4157) || state.block_type == 4162;
-        let is_rare = is_rare_gem || is_rare_nugget || state.is_nwc;
-
-        let priority_dist = if is_rare {
-            dist_sq / 10000
-        } else {
-            dist_sq
-        };
-
-        if best_target.is_none() || priority_dist < best_target.as_ref().unwrap().1 {
+        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
             best_target = Some((
                 crate::models::BotTarget::Collecting {
                     id,
@@ -276,13 +262,13 @@ pub fn find_best_bot_target(
                     x: state.map_x,
                     y: state.map_y,
                 },
-                priority_dist
+                dist_sq
             ));
         }
     }
 
-    // Scan Gemstones
-    let search_radius = 40;
+    // 2. Scan Gemstones (Blocks to mine)
+    let search_radius = 60;
     let min_x = (player_map_x - search_radius).max(0);
     let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
     let min_y = (player_map_y - search_radius).max(0);
@@ -297,7 +283,7 @@ pub fn find_best_bot_target(
                     let dy = y - player_map_y;
                     let dist_sq = (dx * dx + dy * dy) as u32;
 
-                    // Enemy avoidance for gemstones too
+                    // Enemy avoidance
                     let mut near_enemy = false;
                     for enemy in ai_enemies.values() {
                         let e_dx = x - enemy.map_x;
@@ -317,32 +303,8 @@ pub fn find_best_bot_target(
         }
     }
 
-    // If we found any high-value target, return it
     if let Some((target, _)) = best_target {
         return Some(target);
-    }
-
-    // --- PHASE 2: COMMON TERRAIN (Only if no high-value targets nearby) ---
-    // This part is fallback to just keep mining forward if everything valuable is gone.
-    let mut best_terrain: Option<(i32, i32, u32)> = None;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let index = (y as u32 * world_width + x as u32) as usize;
-            if let Some(&block_id) = foreground_tiles.get(index) {
-                if is_mineable(block_id) {
-                    let dx = x - player_map_x;
-                    let dy = y - player_map_y;
-                    let dist_sq = (dx * dx + dy * dy) as u32;
-                    if best_terrain.is_none() || dist_sq < best_terrain.unwrap().2 {
-                        best_terrain = Some((x, y, dist_sq));
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some((x, y, _)) = best_terrain {
-        return Some(crate::models::BotTarget::Mining { x, y });
     }
 
     None
