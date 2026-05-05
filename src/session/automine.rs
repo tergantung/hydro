@@ -233,14 +233,17 @@ pub fn find_best_bot_target(
     collectables: &std::collections::HashMap<i32, crate::session::CollectableState>,
     ai_enemies: &std::collections::HashMap<i32, crate::session::AiEnemyState>,
 ) -> Option<crate::models::BotTarget> {
-    // 1. Priority: Collectibles (Floor items)
-    let mut best_collectible: Option<(i32, u32)> = None; 
+    let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
+
+    // --- PHASE 1: HIGH-VALUE TARGETS (Collectibles & Gemstones) ---
+
+    // Scan Collectibles
     for (&id, state) in collectables {
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
 
-        // Enemy proximity check: Avoid items too close to enemies
+        // Enemy avoidance
         let mut near_enemy = false;
         for enemy in ai_enemies.values() {
             let e_dx = state.map_x - enemy.map_x;
@@ -251,48 +254,66 @@ pub fn find_best_bot_target(
             }
         }
         if near_enemy { continue; }
-        
-        if best_collectible.is_none() || dist_sq < best_collectible.unwrap().1 {
-            best_collectible = Some((id, dist_sq));
+
+        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+            best_target = Some((
+                crate::models::BotTarget::Collecting {
+                    id,
+                    block_id: state.block_type as u16,
+                    x: state.map_x,
+                    y: state.map_y,
+                },
+                dist_sq
+            ));
         }
     }
-    
-    if let Some((id, _)) = best_collectible {
-        let state = collectables.get(&id).unwrap();
-        return Some(crate::models::BotTarget::Collecting {
-            id,
-            block_id: state.block_type as u16,
-            x: state.map_x,
-            y: state.map_y,
-        });
-    }
 
-    // 2. Priority: High-Value Gemstones
-    let mut best_gem: Option<(i32, i32, u32)> = None;
-    for y in 0..world_height as i32 {
-        for x in 0..world_width as i32 {
+    // Scan Gemstones
+    let search_radius = 40;
+    let min_x = (player_map_x - search_radius).max(0);
+    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
+    let min_y = (player_map_y - search_radius).max(0);
+    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
             let index = (y as u32 * world_width + x as u32) as usize;
             if let Some(&block_id) = foreground_tiles.get(index) {
                 if is_minegem(block_id) {
                     let dx = x - player_map_x;
                     let dy = y - player_map_y;
                     let dist_sq = (dx * dx + dy * dy) as u32;
-                    if best_gem.is_none() || dist_sq < best_gem.unwrap().2 {
-                        best_gem = Some((x, y, dist_sq));
+
+                    // Enemy avoidance for gemstones too
+                    let mut near_enemy = false;
+                    for enemy in ai_enemies.values() {
+                        let e_dx = x - enemy.map_x;
+                        let e_dy = y - enemy.map_y;
+                        if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
+                            near_enemy = true;
+                            break;
+                        }
+                    }
+                    if near_enemy { continue; }
+
+                    if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+                        best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
                     }
                 }
             }
         }
     }
 
-    if let Some((x, y, _)) = best_gem {
-        return Some(crate::models::BotTarget::Mining { x, y });
+    // If we found any high-value target, return it
+    if let Some((target, _)) = best_target {
+        return Some(target);
     }
 
-    // 3. Priority: Common Terrain (Rocks/Soil) to clear path
+    // --- PHASE 2: COMMON TERRAIN (Only if no high-value targets nearby) ---
+    // This part is fallback to just keep mining forward if everything valuable is gone.
     let mut best_terrain: Option<(i32, i32, u32)> = None;
-    for y in 0..world_height as i32 {
-        for x in 0..world_width as i32 {
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
             let index = (y as u32 * world_width + x as u32) as usize;
             if let Some(&block_id) = foreground_tiles.get(index) {
                 if is_mineable(block_id) {
