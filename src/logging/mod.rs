@@ -179,8 +179,11 @@ impl Logger {
         direction: Option<Direction>,
         scope: &str,
         session_id: Option<&str>,
-        message: String,
+        mut message: String,
     ) {
+        // Scrub sensitive info before logging
+        message = scrub_sensitive_info(&message);
+
         let formatted = format_log_line(level, transport, direction, scope, session_id, &message);
         println!("{formatted}");
 
@@ -209,6 +212,27 @@ impl Logger {
         };
         self.hub.emit(ServerEvent::Log { event });
     }
+}
+
+fn scrub_sensitive_info(input: &str) -> String {
+    let mut scrubbed = input.to_string();
+
+    // Redact Password
+    if let Ok(re) = regex::Regex::new(r#"(?i)"Password"\s*:\s*"[^"]+""#) {
+        scrubbed = re.replace_all(&scrubbed, r#""Password":"[REDACTED]""#).to_string();
+    }
+
+    // Redact Email
+    if let Ok(re) = regex::Regex::new(r#"(?i)"Email"\s*:\s*"[^"]+""#) {
+        scrubbed = re.replace_all(&scrubbed, r#""Email":"[REDACTED]""#).to_string();
+    }
+
+    // Redact JWT/Token
+    if let Ok(re) = regex::Regex::new(r#"(?i)"(Token|JWT|SessionTicket)"\s*:\s*"[^"]+""#) {
+        scrubbed = re.replace_all(&scrubbed, r#""$1":"[REDACTED]""#).to_string();
+    }
+
+    scrubbed
 }
 
 impl LogLevel {

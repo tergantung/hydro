@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 
 import { minimapColor } from "@/lib/dashboard"
-import type { MinimapSnapshot, PlayerPosition } from "@/lib/types"
+import type { AiEnemySnapshot, MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot } from "@/lib/types"
 import { getAtlas, peekAtlas, type AtlasBundle } from "@/lib/atlas"
 
 type Props = {
   minimap: MinimapSnapshot | null
   playerPosition: PlayerPosition
+  aiEnemies: AiEnemySnapshot[]
+  otherPlayers: RemotePlayerSnapshot[]
   currentWorld: string | null
   onHoverChange: (value: string) => void
 }
@@ -70,7 +72,7 @@ interface TileInfo {
   wiring: number
 }
 
-function MinimapPanelImpl({ minimap, playerPosition, currentWorld, onHoverChange }: Props) {
+function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, onHoverChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const tileLayerRef = useRef<HTMLCanvasElement | null>(null)
   const atlasImgRef = useRef<HTMLImageElement | null>(null)
@@ -232,7 +234,7 @@ function MinimapPanelImpl({ minimap, playerPosition, currentWorld, onHoverChange
       ctx.strokeRect(hx, hy, scale, scale)
     }
 
-    for (const op of minimap.other_players) {
+    for (const op of otherPlayers) {
       if (op.position.map_x == null || op.position.map_y == null) continue
       const sx = dx + op.position.map_x * scale + scale / 2
       const sy = dy + (minimap.height - op.position.map_y - 1) * scale + scale / 2
@@ -242,7 +244,7 @@ function MinimapPanelImpl({ minimap, playerPosition, currentWorld, onHoverChange
       ctx.fill()
     }
 
-    for (const enemy of minimap.ai_enemies) {
+    for (const enemy of aiEnemies) {
       if (!enemy.alive) continue
       const sx = dx + enemy.map_x * scale + scale / 2
       const sy = dy + (minimap.height - enemy.map_y - 1) * scale + scale / 2
@@ -268,14 +270,14 @@ function MinimapPanelImpl({ minimap, playerPosition, currentWorld, onHoverChange
       ctx.lineWidth = 1
       ctx.stroke()
     }
-  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y])
+  }, [minimap, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers])
 
   const drawSceneRef = useRef(drawScene)
   drawSceneRef.current = drawScene
 
   useEffect(() => {
     drawSceneRef.current()
-  }, [minimap, atlasResolved, view, hover, playerPosition.map_x, playerPosition.map_y])
+  }, [minimap, atlasResolved, view, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -436,6 +438,8 @@ export const MinimapPanel = memo(MinimapPanelImpl, (prev, next) => {
     prev.playerPosition.map_x === next.playerPosition.map_x &&
     prev.playerPosition.map_y === next.playerPosition.map_y &&
     prev.playerPosition.world_x === next.playerPosition.world_x &&
-    prev.playerPosition.world_y === next.playerPosition.world_y
+    prev.playerPosition.world_y === next.playerPosition.world_y &&
+    prev.aiEnemies === next.aiEnemies &&
+    prev.otherPlayers === next.otherPlayers
   )
 })

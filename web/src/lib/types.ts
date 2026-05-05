@@ -67,6 +67,8 @@ export type SessionSnapshot = {
   world: WorldSnapshot | null
   player_position: PlayerPosition
   inventory: InventoryItem[]
+  ai_enemies: AiEnemySnapshot[]
+  other_players: RemotePlayerSnapshot[]
   last_error: string | null
   ping_ms: number | null
 }

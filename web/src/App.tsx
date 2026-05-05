@@ -833,6 +833,8 @@ function App() {
                               </div>
                             <MinimapPanel
                               minimap={minimap}
+                              aiEnemies={session.ai_enemies}
+                              otherPlayers={session.other_players}
                               playerPosition={session.player_position}
                               currentWorld={session.current_world}
                               onHoverChange={getHoverChange(session.id)}

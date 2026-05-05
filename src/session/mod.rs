@@ -242,6 +242,16 @@ impl BotSession {
                     amount: e.amount,
                 })
                 .collect(),
+            ai_enemies: state.ai_enemies.values().map(|e| crate::models::AiEnemySnapshot {
+                ai_id: e.ai_id,
+                map_x: e.map_x,
+                map_y: e.map_y,
+                alive: e.alive,
+            }).collect(),
+            other_players: state.other_players.iter().map(|(id, pos)| crate::models::RemotePlayerSnapshot {
+                user_id: id.clone(),
+                position: pos.clone(),
+            }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
         }
@@ -1448,6 +1458,9 @@ impl BotSession {
             ids::PACKET_ID_COLLECTABLE_REMOVE => {
                 self.remove_collectable(&message).await;
             }
+            ids::PACKET_ID_INVENTORY_UPDATE => {
+                self.apply_inventory_update(&message).await;
+            }
             ids::PACKET_ID_FISHING_GAME_ACTION => {
                 self.apply_fishing_message(&message, &runtime.outbound_tx).await;
             }
@@ -2010,7 +2023,33 @@ impl BotSession {
         state.tutorial_spawn_pod_confirmed = true;
     }
 
+    async fn apply_inventory_update(&self, message: &Document) {
+        let Ok(inventory_key) = message.get_i32("Bi") else { return; };
+        let amount = message.get_i32("Amt").unwrap_or_default() as u16;
+        let block_id = message.get_i32("BT").unwrap_or_default() as u16;
+        let inventory_type = message.get_i32("IT").unwrap_or_default() as u16;
+
+        let mut state = self.state.write().await;
+        if amount == 0 {
+            state.inventory.retain(|e| e.inventory_key != inventory_key);
+        } else {
+            if let Some(entry) = state.inventory.iter_mut().find(|e| e.inventory_key == inventory_key) {
+                entry.amount = amount;
+                entry.block_id = block_id;
+                entry.inventory_type = inventory_type;
+            } else {
+                state.inventory.push(InventoryEntry {
+                    inventory_key,
+                    block_id,
+                    inventory_type,
+                    amount,
+                });
+            }
+        }
+    }
+
     async fn track_collectable(&self, message: &Document) {
+
         let Some(collectable_id) = message.get_i32("CollectableID").ok() else {
             return;
         };
@@ -2138,8 +2177,8 @@ impl BotSession {
             return;
         }
 
-        self.logger.info("session", Some(&self.id),
-            format!("AI spawn ID={ai_id} at ({map_x},{map_y})"));
+        // self.logger.info("session", Some(&self.id),
+        //     format!("AI spawn ID={ai_id} at ({map_x},{map_y})"));
 
         let mut state = self.state.write().await;
         state.ai_enemies.insert(
@@ -2533,8 +2572,8 @@ impl SchedulerState {
                     self.movement.world_y,
                     self.movement.anim,
                     self.movement.direction,
-                    false,
-                ));
+                    false
+        ));
                 batch.extend(after_generated);
                 if self.st_due {
                     batch.push(protocol::make_st());
@@ -3388,6 +3427,7 @@ async fn automine_loop(
     const MAX_TILE_ATTEMPTS: u32 = 15;
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
+    let mut sticky_target: Option<(i32, i32, bool, Option<i32>)> = None; // (x, y, is_col, opt_cid)
 
     loop {
         tokio::select! {
@@ -3566,9 +3606,8 @@ async fn automine_loop(
                 {
                     let st = state.read().await;
                     let mut all_cols: Vec<_> = st.collectables.values().map(|c| {
-                        let (cx, cy) = protocol::world_to_map(c.pos_x, c.pos_y);
-                        let cx = cx as i32;
-                        let cy = cy as i32;
+                        let cx = c.pos_x.floor() as i32;
+                        let cy = c.pos_y.floor() as i32;
                         let dist = (cx - player_x).abs() + (cy - player_y).abs();
                         (cx, cy, c.collectable_id, dist)
                     }).collect();
@@ -3584,15 +3623,48 @@ async fn automine_loop(
                     }
                 }
 
-                // Pathfinding target: prioritize reachable collectables, fallback to mineable blocks
-                let target = best_collectable.map(|(cx, cy, cid, path)| (cx, cy, true, Some(cid), Some(path)))
-                    .or_else(|| {
-                        automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground)
-                            .map(|(tx, ty)| (tx, ty, false, None, None))
-                    });
+                // Pathfinding target selection with stickiness
+                let mut target = None;
+
+                // 1. Check if our sticky target is still valid
+                if let Some((tx, ty, is_col, cid)) = sticky_target {
+                    let still_exists = if is_col {
+                        state.read().await.collectables.contains_key(&cid.unwrap())
+                    } else {
+                        let idx = (ty as u32 * world_width + tx as u32) as usize;
+                        foreground.get(idx).copied().unwrap_or(0) != 0
+                    };
+
+                    let not_masked = tile_attempts.get(&(tx, ty)).copied().unwrap_or(0) < MAX_TILE_ATTEMPTS;
+
+                    if still_exists && not_masked {
+                        // Re-verify reachability
+                        if let Some(path) = automine::get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
+                            target = Some((tx, ty, is_col, cid, Some(path)));
+                        }
+                    }
+                }
+
+                // 2. If no sticky target or unreachable, perform a fresh scan
+                if target.is_none() {
+                    target = best_collectable.map(|(cx, cy, cid, path)| (cx, cy, true, Some(cid), Some(path)))
+                        .or_else(|| {
+                            automine::find_best_target(player_x, player_y, world_width, world_height, &masked_foreground)
+                                .map(|(tx, ty)| (tx, ty, false, None, None))
+                        });
+                }
+
+                // 3. Update sticky target state
+                sticky_target = target.as_ref().map(|(tx, ty, is_col, cid, _)| (*tx, *ty, *is_col, *cid));
 
                 match target {
                     Some((target_x, target_y, is_collectable, opt_cid, opt_path)) => {
+                        if is_collectable {
+                            _logger.info("automine", Some(&_session_id), format!("TARGETING: Collectable ID={} at ({}, {})", opt_cid.unwrap(), target_x, target_y));
+                        } else {
+                            _logger.info("automine", Some(&_session_id), format!("TARGETING: Block at ({}, {})", target_x, target_y));
+                        }
+                        
                         let resolved_path = opt_path.or_else(|| automine::get_path_to_target(player_x, player_y, target_x, target_y, &masked_foreground, world_width, world_height));
                         match resolved_path {
                             Some(path) => {
@@ -3619,7 +3691,7 @@ async fn automine_loop(
                                         // 1-tile vertical breach.
                                         let anim = movement::ANIM_HIT_MOVE;
 
-                                        _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
+                                        // _logger.info("automine", Some(&_session_id), format!("Mining block at ({},{})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
                                             player_x, player_y, // Do not move INTO the solid block
@@ -4292,7 +4364,7 @@ async fn run_tutorial_script(
             13.92,
             movement::ANIM_IDLE,
             movement::DIR_RIGHT,
-            false,
+            false
         )],
     )
     .await?;
@@ -4384,7 +4456,7 @@ async fn run_tutorial_script(
             14.24,
             movement::ANIM_IDLE,
             movement::DIR_RIGHT,
-            false,
+            false
         )],
     )
     .await?;
@@ -4398,7 +4470,7 @@ async fn run_tutorial_script(
             14.24,
             movement::ANIM_IDLE,
             movement::DIR_RIGHT,
-            false,
+            false
         )],
     )
     .await?;
@@ -4423,7 +4495,7 @@ async fn run_tutorial_script(
             14.24,
             movement::ANIM_IDLE,
             movement::DIR_RIGHT,
-            false,
+            false
         )],
     )
     .await?;
@@ -4448,7 +4520,7 @@ async fn run_tutorial_script(
             14.24,
             movement::ANIM_IDLE,
             movement::DIR_RIGHT,
-            false,
+            false
         )],
     )
     .await?;
@@ -6079,6 +6151,16 @@ async fn publish_state_snapshot(
                     amount: e.amount,
                 })
                 .collect(),
+            ai_enemies: state.ai_enemies.values().map(|e| crate::models::AiEnemySnapshot {
+                ai_id: e.ai_id,
+                map_x: e.map_x,
+                map_y: e.map_y,
+                alive: e.alive,
+            }).collect(),
+            other_players: state.other_players.iter().map(|(id, pos)| crate::models::RemotePlayerSnapshot {
+                user_id: id.clone(),
+                position: pos.clone(),
+            }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
         }
@@ -6143,6 +6225,16 @@ async fn set_local_map_position(
                     amount: e.amount,
                 })
                 .collect(),
+            ai_enemies: state.ai_enemies.values().map(|e| crate::models::AiEnemySnapshot {
+                ai_id: e.ai_id,
+                map_x: e.map_x,
+                map_y: e.map_y,
+                alive: e.alive,
+            }).collect(),
+            other_players: state.other_players.iter().map(|(id, pos)| crate::models::RemotePlayerSnapshot {
+                user_id: id.clone(),
+                position: pos.clone(),
+            }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
         }
@@ -6194,6 +6286,16 @@ async fn set_local_world_position(
                     amount: e.amount,
                 })
                 .collect(),
+            ai_enemies: state.ai_enemies.values().map(|e| crate::models::AiEnemySnapshot {
+                ai_id: e.ai_id,
+                map_x: e.map_x,
+                map_y: e.map_y,
+                alive: e.alive,
+            }).collect(),
+            other_players: state.other_players.iter().map(|(id, pos)| crate::models::RemotePlayerSnapshot {
+                user_id: id.clone(),
+                position: pos.clone(),
+            }).collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
         }

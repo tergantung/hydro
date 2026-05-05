@@ -196,6 +196,8 @@ pub struct SessionSnapshot {
     pub world: Option<WorldSnapshot>,
     pub player_position: PlayerPosition,
     pub inventory: Vec<InventoryItem>,
+    pub ai_enemies: Vec<AiEnemySnapshot>,
+    pub other_players: Vec<RemotePlayerSnapshot>,
     pub last_error: Option<String>,
     pub ping_ms: Option<u32>,
 }

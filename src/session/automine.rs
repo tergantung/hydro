@@ -183,11 +183,11 @@ pub fn find_best_target(
 ) -> Option<(i32, i32)> {
     let mut best_target: Option<(i32, i32, u16, i32)> = None; // (x, y, block_id, distance_sq)
 
-    let search_radius = 15; // tiles around player
-    let min_x = (player_map_x - search_radius).max(0);
-    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
-    let min_y = (player_map_y - search_radius).max(0);
-    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
+    let search_radius = 255; // Search the entire world
+    let min_x = 0;
+    let max_x = world_width as i32 - 1;
+    let min_y = 0;
+    let max_y = world_height as i32 - 1;
 
     // Prefer collectibles first (user requested). Fall back to legacy mineable IDs.
     for x in min_x..=max_x {
