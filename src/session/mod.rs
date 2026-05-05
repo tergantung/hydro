@@ -1565,21 +1565,42 @@ impl BotSession {
                     state.world_wiring_tiles = decoded_world.wiring_tiles;
                     state.growing_tiles.clear();
                     state.collectables.clear();
-                    for c in decoded_world.collectables {
-                        let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
-                        state.collectables.insert(c.collectable_id, CollectableState {
-                            collectable_id: c.collectable_id,
-                            block_type: c.block_type,
-                            amount: c.amount,
-                            inventory_type: c.inventory_type,
-                            pos_x: c.pos_x,
-                            pos_y: c.pos_y,
-                            map_x: mx.floor() as i32,
-                            map_y: my.floor() as i32,
-                            is_gem: c.is_gem,
-                            gem_type: c.gem_type,
-                        });
+                    
+                    // Dump to world_objects.txt for analysis
+                    {
+                        use std::fs::OpenOptions;
+                        use std::io::Write;
+                        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("world_objects.txt") {
+                            let _ = writeln!(file, "\n--- WORLD: {} ---", world_name.as_deref().unwrap_or("unknown"));
+                            
+                            for c in &decoded_world.collectables {
+                                let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
+                                let name = block_types().get(&(c.block_type as u16)).map(|info| info.name.as_str()).unwrap_or("Unknown");
+                                let _ = writeln!(file, "[Collectable] ID={} Type={} ({}) at ({}, {}) map=({}, {})", 
+                                    c.collectable_id, c.block_type, name, c.pos_x, c.pos_y, mx.floor() as i32, my.floor() as i32);
+                                
+                                state.collectables.insert(c.collectable_id, CollectableState {
+                                    collectable_id: c.collectable_id,
+                                    block_type: c.block_type,
+                                    amount: c.amount,
+                                    inventory_type: c.inventory_type,
+                                    pos_x: c.pos_x,
+                                    pos_y: c.pos_y,
+                                    map_x: mx.floor() as i32,
+                                    map_y: my.floor() as i32,
+                                    is_gem: c.is_gem,
+                                    gem_type: c.gem_type,
+                                });
+                            }
+
+                            for i in &decoded_world.world_items {
+                                let name = block_types().get(&i.item_id).map(|info| info.name.as_str()).unwrap_or("Unknown");
+                                let _ = writeln!(file, "[WorldItem] ID={} ({}) at ({}, {}) state={}", 
+                                    i.item_id, name, i.map_x, i.map_y, i.state);
+                            }
+                        }
                     }
+
                     state.world_items = decoded_world.world_items;
                     state.other_players.clear();
                     state.ai_enemies.clear();
@@ -1768,6 +1789,10 @@ impl BotSession {
                     7 => "speed-hack / movement violation",
                     _ => "unknown — collect more samples to map",
                 };
+
+                let raw_hex = message.to_vec().ok().map(|b| hex::encode(b)).unwrap_or_else(|| "ERR_BSON_SERIALIZE".to_string());
+                self.logger.error("session", Some(&self.id), 
+                    format!("KICKED: code={} hint={} raw_bson={}", error_code, reason_hint, raw_hex));
 
                 let (last_action, action_age, pos) = {
                     let st = self.state.read().await;
@@ -3872,7 +3897,7 @@ async fn automine_loop(
                                             player_x, player_y, // Do not move INTO the solid block
                                             next_step.0, next_step.1,
                                             dir,
-                                            anim,
+                                            movement::ANIM_HIT,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
