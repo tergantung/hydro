@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use parking_lot::Mutex as PlMutex;
 
-const POSITION_PUBLISH_THROTTLE: Duration = Duration::from_millis(100);
+const POSITION_PUBLISH_THROTTLE: Duration = Duration::from_millis(33);
 
 use bson::{Document, doc};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -200,6 +200,8 @@ impl BotSession {
             tutorial_phase4_acknowledged: false,
             fishing: FishingAutomationState::default(),
             ping_ms: None,
+            collect_cooldowns: CollectCooldowns::default(),
+            rate_limit_until: None,
         }));
 
         let session = Arc::new(Self {
@@ -2240,12 +2242,15 @@ impl BotSession {
 
 fn update_player_position_from_message(message: &Document, position: &mut PlayerPosition) -> bool {
     let previous = position.clone();
-    if let Ok(x) = message.get_f64("x") {
+
+    // PW packets can send coordinates as either f64 or i32 depending on the entity type.
+    // We must try both to ensure we don't miss updates.
+    if let Some(x) = message.get_f64("x").ok().or_else(|| message.get_i32("x").ok().map(|v| v as f64)) {
         position.world_x = Some(x);
         let (map_x, _) = protocol::world_to_map(x, position.world_y.unwrap_or_default());
         position.map_x = Some(map_x);
     }
-    if let Ok(y) = message.get_f64("y") {
+    if let Some(y) = message.get_f64("y").ok().or_else(|| message.get_i32("y").ok().map(|v| v as f64)) {
         position.world_y = Some(y);
         let (_, map_y) = protocol::world_to_map(position.world_x.unwrap_or_default(), y);
         position.map_y = Some(map_y);
@@ -2713,6 +2718,27 @@ impl Default for FishingAutomationState {
     }
 }
 
+#[derive(Debug, Default)]
+struct CollectCooldowns {
+    cooldowns: HashMap<i32, Instant>,
+}
+
+impl CollectCooldowns {
+    const COOLDOWN: Duration = Duration::from_secs(3); // 3s per item minimum
+
+    fn can_collect(&self, id: i32) -> bool {
+        match self.cooldowns.get(&id) {
+            Some(&last) => last.elapsed() >= Self::COOLDOWN,
+            None => true,
+        }
+    }
+
+    fn mark_collected(&mut self, id: i32) {
+        self.cooldowns.insert(id, Instant::now());
+        // Cleanup old entries (older than 30s)
+        self.cooldowns.retain(|_, last| last.elapsed() < Duration::from_secs(30));
+    }
+}
 #[derive(Debug)]
 struct SessionState {
     status: SessionStatus,
@@ -2754,6 +2780,8 @@ struct SessionState {
     tutorial_phase4_acknowledged: bool,
     fishing: FishingAutomationState,
     ping_ms: Option<u32>,
+    collect_cooldowns: CollectCooldowns,
+    rate_limit_until: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -3408,10 +3436,7 @@ async fn automine_loop(
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    // Faster cadence than the old 1200ms — we no longer per-tick spam WeOwC,
-    // so the rate-limit kick is no longer the constraint. BMod uses 220ms;
-    // However, on high-ping connections (350ms+), ticks can clump together in the TCP stack
-    // and trigger server-side flood disconnects (EOF). Using 600ms as a safe margin.
+    // Reverted to 600ms as requested (safe margin for mining).
     let mut tick = interval(Duration::from_millis(600));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -3727,6 +3752,10 @@ async fn automine_loop(
                                             if is_collectable {
                                                 let cid = opt_cid.unwrap();
                                                 let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                                                {
+                                                    let mut st = state.write().await;
+                                                    st.collectables.remove(&cid);
+                                                }
                                                 record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
                                             } else {
                                                 let hit_pkts = protocol::make_mine_hit_stationary(
@@ -3744,6 +3773,10 @@ async fn automine_loop(
                                     if is_collectable {
                                         let cid = opt_cid.unwrap();
                                         let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                                        {
+                                            let mut st = state.write().await;
+                                            st.collectables.remove(&cid);
+                                        }
                                         record_action(state, format!("request collectable cid={cid} on tile")).await;
                                     } else {
                                         // Already on top of target — stationary hit (a=6 Hit) as exclusive batch

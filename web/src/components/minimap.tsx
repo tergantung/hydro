@@ -72,6 +72,11 @@ interface TileInfo {
   wiring: number
 }
 
+interface EntityVisual {
+  x: number
+  y: number
+}
+
 function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, currentWorld, onHoverChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const tileLayerRef = useRef<HTMLCanvasElement | null>(null)
@@ -86,6 +91,12 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
   const layoutRef = useRef({ dx: 0, dy: 0, scale: 1, w: 0, h: 0 })
   const onHoverChangeRef = useRef(onHoverChange)
   onHoverChangeRef.current = onHoverChange
+
+  // Interpolation state
+  const visualPlayerRef = useRef<EntityVisual | null>(null)
+  const visualEnemiesRef = useRef<Map<number, EntityVisual>>(new Map())
+  const visualOthersRef = useRef<Map<string, EntityVisual>>(new Map())
+  const lastFrameTimeRef = useRef<number>(performance.now())
 
   useEffect(() => {
     const cached = peekAtlas()
@@ -117,6 +128,9 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
     if (lastWorldRef.current !== currentWorld) {
       lastWorldRef.current = currentWorld
       setView({ zoom: 1, panX: 0, panY: 0 })
+      visualPlayerRef.current = null
+      visualEnemiesRef.current.clear()
+      visualOthersRef.current.clear()
     }
   }, [currentWorld])
 
@@ -151,6 +165,13 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       canvas.width = cw
       canvas.height = ch
     }
+
+    const now = performance.now()
+    const dt = Math.min(100, now - lastFrameTimeRef.current) / 1000
+    lastFrameTimeRef.current = now
+
+    // Smooth factor (lerp speed)
+    const t = 1 - Math.exp(-15 * dt)
 
     const v = viewRef.current
     const fitScale = Math.min(cw / minimap.width, ch / minimap.height)
@@ -234,20 +255,43 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       ctx.strokeRect(hx, hy, scale, scale)
     }
 
+    // Draw Other Players with Lerp
     for (const op of otherPlayers) {
       if (op.position.map_x == null || op.position.map_y == null) continue
-      const sx = dx + op.position.map_x * scale + scale / 2
-      const sy = dy + (minimap.height - op.position.map_y - 1) * scale + scale / 2
+      let visual = visualOthersRef.current.get(op.user_id)
+      if (!visual) {
+        visual = { x: op.position.map_x, y: op.position.map_y }
+        visualOthersRef.current.set(op.user_id, visual)
+      }
+      visual.x += (op.position.map_x - visual.x) * t
+      visual.y += (op.position.map_y - visual.y) * t
+
+      const sx = dx + visual.x * scale + scale / 2
+      const sy = dy + (minimap.height - visual.y - 1) * scale + scale / 2
       ctx.fillStyle = "#a855f7"
       ctx.beginPath()
       ctx.arc(sx, sy, Math.max(2, scale * 0.45), 0, Math.PI * 2)
       ctx.fill()
     }
 
+    // Draw AI Enemies with Lerp
+    const currentAiIds = new Set(aiEnemies.map(e => e.ai_id))
+    for (const [id] of visualEnemiesRef.current) {
+        if (!currentAiIds.has(id)) visualEnemiesRef.current.delete(id)
+    }
+
     for (const enemy of aiEnemies) {
       if (!enemy.alive) continue
-      const sx = dx + enemy.map_x * scale + scale / 2
-      const sy = dy + (minimap.height - enemy.map_y - 1) * scale + scale / 2
+      let visual = visualEnemiesRef.current.get(enemy.ai_id)
+      if (!visual) {
+          visual = { x: enemy.map_x, y: enemy.map_y }
+          visualEnemiesRef.current.set(enemy.ai_id, visual)
+      }
+      visual.x += (enemy.map_x - visual.x) * t
+      visual.y += (enemy.map_y - visual.y) * t
+
+      const sx = dx + visual.x * scale + scale / 2
+      const sy = dy + (minimap.height - visual.y - 1) * scale + scale / 2
       ctx.fillStyle = "#fb923c"
       ctx.beginPath()
       ctx.arc(sx, sy, Math.max(2, scale * 0.4), 0, Math.PI * 2)
@@ -257,11 +301,18 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
       ctx.stroke()
     }
 
+    // Draw Local Player with Lerp
     const px = playerPosition.map_x
     const py = playerPosition.map_y
     if (px != null && py != null) {
-      const sx = dx + px * scale + scale / 2
-      const sy = dy + (minimap.height - py - 1) * scale + scale / 2
+      if (!visualPlayerRef.current) {
+          visualPlayerRef.current = { x: px, y: py }
+      }
+      visualPlayerRef.current.x += (px - visualPlayerRef.current.x) * t
+      visualPlayerRef.current.y += (py - visualPlayerRef.current.y) * t
+
+      const sx = dx + visualPlayerRef.current.x * scale + scale / 2
+      const sy = dy + (minimap.height - visualPlayerRef.current.y - 1) * scale + scale / 2
       ctx.fillStyle = "#ff3b30"
       ctx.beginPath()
       ctx.arc(sx, sy, Math.max(3, scale * 0.6), 0, Math.PI * 2)
@@ -275,9 +326,16 @@ function MinimapPanelImpl({ minimap, playerPosition, aiEnemies, otherPlayers, cu
   const drawSceneRef = useRef(drawScene)
   drawSceneRef.current = drawScene
 
+  // Animation Loop for smoothness
   useEffect(() => {
-    drawSceneRef.current()
-  }, [minimap, atlasResolved, view, hover, playerPosition.map_x, playerPosition.map_y, aiEnemies, otherPlayers])
+      let frameId: number
+      const loop = () => {
+          drawSceneRef.current()
+          frameId = requestAnimationFrame(loop)
+      }
+      frameId = requestAnimationFrame(loop)
+      return () => cancelAnimationFrame(frameId)
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
