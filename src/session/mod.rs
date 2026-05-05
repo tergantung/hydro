@@ -3622,12 +3622,6 @@ async fn automine_loop(
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
 
-    // Crystal throttle: aren't valuable enough to chase routinely. Allow one
-    // crystal target per CRYSTAL_INTERVAL successful breaks, then reset.
-    const CRYSTAL_INTERVAL: u32 = 5;
-    let mut breaks_since_crystal: u32 = 0;
-    let mut prev_dead_end_count: usize = 0;
-
     loop {
         let ping = { state.read().await.ping_ms.unwrap_or(0) };
         let base_delay = 800;
@@ -3738,8 +3732,6 @@ async fn automine_loop(
 
                 // Drop attempt entries for tiles the server has confirmed destroyed
                 // (foreground tile is now 0). Those positions are walkable now.
-                // Each removal here is one successful break — feed the crystal throttle.
-                let attempts_before = tile_attempts.len();
                 tile_attempts.retain(|&(x, y), _| {
                     if x < 0 || y < 0 || (x as u32) >= world_width || (y as u32) >= world_height {
                         return false;
@@ -3747,13 +3739,6 @@ async fn automine_loop(
                     let idx = (y as u32 * world_width + x as u32) as usize;
                     foreground.get(idx).copied().unwrap_or(0) != 0
                 });
-                let active_dead_ends = tile_attempts.values().filter(|&&n| n >= MAX_TILE_ATTEMPTS).count();
-                let removed_count = attempts_before.saturating_sub(tile_attempts.len());
-                // Don't count dead-end-purges as successful breaks (they were skipped, not broken).
-                let new_dead_ends = active_dead_ends.saturating_sub(prev_dead_end_count);
-                let real_breaks = removed_count.saturating_sub(new_dead_ends);
-                breaks_since_crystal = breaks_since_crystal.saturating_add(real_breaks as u32);
-                prev_dead_end_count = active_dead_ends;
 
                 // Build a masked view of the foreground where dead-end tiles are
                 // replaced with bedrock (3993 — astar's get_tile_cost returns None,

@@ -1,227 +1,17 @@
-/// Packet-based automine automation loop.
-/// Selects gemstone/ore targets from world snapshot, pathfinds, and mines.
-use std::time::{Duration, Instant};
-use std::sync::OnceLock;
-use std::collections::HashSet;
-use serde_json::Value;
+/// Packet-based automine automation: tile predicates, target selection,
+/// and pathfinding glue. The actual loop driving these helpers lives in
+/// `mod.rs::automine_loop` (will be merged into this file by Task 5).
 
-#[derive(Debug, Clone)]
-pub struct AutomineState {
-    pub active: bool,
-    pub current_target: Option<(i32, i32)>,
-    pub last_target_scan: Instant,
-    pub last_action: Instant,
-    pub scan_cooldown: Duration,
-    pub action_cooldown: Duration,
-}
-
-impl AutomineState {
-    pub fn new() -> Self {
-        Self {
-            active: false,
-            current_target: None,
-            last_target_scan: Instant::now(),
-            last_action: Instant::now(),
-            scan_cooldown: Duration::from_millis(500),
-            action_cooldown: Duration::from_millis(300),
-        }
-    }
-
-    pub fn start(&mut self) {
-        self.active = true;
-        self.current_target = None;
-        self.last_target_scan = Instant::now() - self.scan_cooldown;
-        self.last_action = Instant::now() - self.action_cooldown;
-    }
-
-    pub fn stop(&mut self) {
-        self.active = false;
-        self.current_target = None;
-    }
-
-    pub fn is_ready_to_scan(&self) -> bool {
-        self.active && self.last_target_scan.elapsed() >= self.scan_cooldown
-    }
-
-    pub fn is_ready_to_act(&self) -> bool {
-        self.active && self.last_action.elapsed() >= self.action_cooldown
-    }
-
-    pub fn mark_scan(&mut self) {
-        self.last_target_scan = Instant::now();
-    }
-
-    pub fn mark_action(&mut self) {
-        self.last_action = Instant::now();
-    }
-}
-
-/// Gemstone/ore block IDs typically mined in PixelWorlds.
-/// This is a starter set; expand as needed.
-/// Legacy mineable detection (kept for reference). New behavior: prefer collectibles.
-/// Mine decoration blocks that look like targets but are indestructible.
-/// From Seraph GWC decode: stalactites, bats, spiders, torches.
-pub fn is_decoration(block_id: u16) -> bool {
-    matches!(
-        block_id,
-        4143 | // MiningStalactitesTopData
-        4144 | // MiningStalactitesBottomData
-        4151 | // MiningBatData
-        4152 | // MiningSpiderData
-        4153   // MiningTorchData
-    )
-}
-
-pub fn is_mineable(block_id: u16) -> bool {
-    // Never target indestructible decorations
-    if is_decoration(block_id) {
-        return false;
-    }
-    matches!(
-        block_id,
-        // Legacy main world mineables
-        1..=32 |
-        // MineWorld Crystals (3974-3979)
-        3974..=3979 |
-        // MineWorld Soils/Rocks (3980-3986, 3989, 3991-3992, 3994)
-        3980..=3986 | 3989 | 3991 | 3992 | 3994 |
-        // MineWorld GemStones (3995-4003)
-        3995..=4003
-    )
-}
-
-/// Is this a MineGem (higher priority targets)?
+/// Is this a mineable gemstone block?
 pub fn is_minegem(block_id: u16) -> bool {
     // Only actual Gemstone BLOCKS that can be mined
-    (block_id >= 3995 && block_id <= 4003) || 
-    (block_id >= 4101 && block_id <= 4102)
+    (block_id >= 3995 && block_id <= 4003) || (block_id >= 4101 && block_id <= 4102)
 }
 
-pub fn is_common_terrain(block_id: u16) -> bool {
-    matches!(
-        block_id, 
-        3980..=3984 | // Soils
-        3985 | 3986 | 3989 | 3991 | 3992 | 3994 // Standard Rocks/Wood
-    )
-}
-
-pub fn is_soil(block_id: u16) -> bool {
-    matches!(block_id, 3980..=3984)
-}
-
-pub fn is_mineable_target(block_id: u16) -> bool {
-    is_minegem(block_id) || is_common_terrain(block_id)
-}
-
-/// Collectible detection: build a cached set of block IDs that are "collectable".
-/// Uses block_types.json (same source as the rest of the project) and marks an ID
-/// as collectible if the name contains "collect"/"collectable" or the typeName is "Consumable".
-fn collectible_ids() -> &'static HashSet<u16> {
-    static COLLECT_IDS: OnceLock<HashSet<u16>> = OnceLock::new();
-    COLLECT_IDS.get_or_init(|| {
-        let raw = include_str!("../../block_types.json");
-        let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(raw) else {
-            return HashSet::new();
-        };
-
-        entries
-            .into_iter()
-            .filter_map(|entry| {
-                let id = entry.get("id")?.as_u64()? as u16;
-                let name = entry.get("name")?.as_str().unwrap_or("").to_lowercase();
-                let type_name = entry.get("typeName")?.as_str().unwrap_or("").to_lowercase();
-
-                if name.contains("collect") || name.contains("collectable") || type_name == "consumable" 
-                   || matches!(id, 4154..=4162 | 4012..=4056) {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    })
-}
-
-/// Returns true when the given tile id is considered a collectible target.
-pub fn is_collectible(block_id: u16) -> bool {
-    collectible_ids().contains(&block_id)
-}
-
-/// Mining-specific IDs (from block_types.json)
-const PORTAL_MINE_EXIT_ID: u16 = 3966;
-const MINING_GEM_START: u16 = 3995;
-const MINING_GEM_END: u16 = 4003; // inclusive
-
-/// Heuristic: is this world a mining map? We detect presence of mining gemstones or portal tiles.
-pub fn is_mine_map(foreground_tiles: &[u16]) -> bool {
-    foreground_tiles.iter().any(|&id| {
-        id == PORTAL_MINE_EXIT_ID || (id >= MINING_GEM_START && id <= MINING_GEM_END)
-    })
-}
-
-/// Return true when there are no more collectible/mining gem tiles in the provided foreground.
-pub fn all_collectibles_cleared(foreground_tiles: &[u16]) -> bool {
-    !foreground_tiles.iter().any(|&id| id >= MINING_GEM_START && id <= MINING_GEM_END)
-}
-
-/// Find the exit gate (portal) coordinates in the foreground tiles, if present.
-pub fn find_exit_gate(
-    world_width: u32,
-    world_height: u32,
-    foreground_tiles: &[u16],
-) -> Option<(i32, i32)> {
-    for y in 0..world_height as i32 {
-        for x in 0..world_width as i32 {
-            let index = (y as u32 * world_width + x as u32) as usize;
-            if let Some(&id) = foreground_tiles.get(index) {
-                if id == PORTAL_MINE_EXIT_ID {
-                    return Some((x, y));
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Scan the world snapshot for nearby mineable targets.
-/// Prefer gemstones closest to the player.
+/// Pick the best target — collectible or gemstone — within a 60-tile radius
+/// of the player. Targets near AI enemies are skipped.
 ///
-/// `allow_crystals` controls whether crystal blocks (3974..=3979) are eligible.
-/// Crystals aren't valuable enough to target every tick — the caller throttles
-/// them by passing `false` until enough non-crystal tiles have been broken
-/// (default cadence: 1 crystal per 5 successful breaks).
-pub fn find_all_targets(
-    player_map_x: i32,
-    player_map_y: i32,
-    world_width: u32,
-    world_height: u32,
-    foreground_tiles: &[u16],
-) -> Vec<(i32, i32)> {
-    let mut targets = Vec::new();
-    let search_radius = 50; // reasonable radius for unified scanning
-
-    let min_x = (player_map_x - search_radius).max(0);
-    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
-    let min_y = (player_map_y - search_radius).max(0);
-    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
-
-    for x in min_x..=max_x {
-        for y in min_y..=max_y {
-            let index = (y as u32 * world_width + x as u32) as usize;
-            if let Some(&block_id) = foreground_tiles.get(index) {
-                if block_id != 0 {
-                    let is_mineable = is_mineable_target(block_id);
-                    
-                    if is_mineable {
-                        targets.push((x, y));
-                    }
-                }
-            }
-        }
-    }
-    targets
-}
-
+/// Returns `None` when no eligible target exists in range.
 pub fn find_best_bot_target(
     player_map_x: i32,
     player_map_y: i32,
@@ -233,16 +23,13 @@ pub fn find_best_bot_target(
 ) -> Option<crate::models::BotTarget> {
     let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
 
-    // --- PHASE 1: TARGETING (Gems, Stones, Nuggets, Collectibles) ---
-    // All these targets have equal "level" - nearest wins.
-    
-    // 1. Scan Collectibles (Items on floor)
+    // Collectibles (items on the floor) and gemstones (blocks in walls) are
+    // ranked equally — nearest reachable target wins.
     for (&id, state) in collectables {
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
 
-        // Enemy avoidance
         let mut near_enemy = false;
         for enemy in ai_enemies.values() {
             let e_dx = state.map_x - enemy.map_x;
@@ -252,7 +39,9 @@ pub fn find_best_bot_target(
                 break;
             }
         }
-        if near_enemy { continue; }
+        if near_enemy {
+            continue;
+        }
 
         if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
             best_target = Some((
@@ -262,12 +51,11 @@ pub fn find_best_bot_target(
                     x: state.map_x,
                     y: state.map_y,
                 },
-                dist_sq
+                dist_sq,
             ));
         }
     }
 
-    // 2. Scan Gemstones (Blocks to mine)
     let search_radius = 60;
     let min_x = (player_map_x - search_radius).max(0);
     let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
@@ -283,7 +71,6 @@ pub fn find_best_bot_target(
                     let dy = y - player_map_y;
                     let dist_sq = (dx * dx + dy * dy) as u32;
 
-                    // Enemy avoidance
                     let mut near_enemy = false;
                     for enemy in ai_enemies.values() {
                         let e_dx = x - enemy.map_x;
@@ -293,7 +80,9 @@ pub fn find_best_bot_target(
                             break;
                         }
                     }
-                    if near_enemy { continue; }
+                    if near_enemy {
+                        continue;
+                    }
 
                     if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
                         best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
@@ -303,40 +92,10 @@ pub fn find_best_bot_target(
         }
     }
 
-    if let Some((target, _)) = best_target {
-        return Some(target);
-    }
-
-    None
+    best_target.map(|(target, _)| target)
 }
 
-
-/// Check if we can reach a target via pathfinding.
-pub fn can_reach_target(
-    player_map_x: i32,
-    player_map_y: i32,
-    target_x: i32,
-    target_y: i32,
-    foreground_tiles: &[u16],
-    world_width: u32,
-    world_height: u32,
-) -> bool {
-    let width = world_width as usize;
-    let height = world_height as usize;
-
-    match crate::pathfinding::astar::find_tile_path(
-        foreground_tiles,
-        width,
-        height,
-        (player_map_x, player_map_y),
-        (target_x, target_y),
-    ) {
-        Some(path) => !path.is_empty() && path.len() < 50,
-        None => false,
-    }
-}
-
-/// Get the path to a target, used to step-by-step navigate and mine obstacles.
+/// Get the A* path from the player's tile to a target tile, if any exists.
 pub fn get_path_to_target(
     player_map_x: i32,
     player_map_y: i32,
@@ -354,4 +113,3 @@ pub fn get_path_to_target(
         (target_x, target_y),
     )
 }
-
