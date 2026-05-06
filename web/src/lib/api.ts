@@ -213,6 +213,22 @@ export function stopAutomine(sessionId: string) {
   })
 }
 
+export function startAutonether(sessionId: string) {
+  return request<ActionResponse>(`/api/sessions/${sessionId}/autonether/start`, {
+    method: "POST",
+  })
+}
+
+export function stopAutonether(sessionId: string) {
+  return request<ActionResponse>(`/api/sessions/${sessionId}/autonether/stop`, {
+    method: "POST",
+  })
+}
+
+export function getAutonetherStatus(sessionId: string) {
+  return request<{ status?: { active: boolean; phase: string } | null }>(`/api/sessions/${sessionId}/autonether/status?ts=${Date.now()}`)
+}
+
 export async function loadBlockTypes(): Promise<BlockNameMap> {
   const types = await request<BlockType[]>("/block_types.json")
   return Object.fromEntries(types.map((t) => [String(t.id), t.name]))
@@ -233,4 +249,10 @@ export function stopLuaScript(sessionId: string) {
 
 export function getLuaScriptStatus(sessionId: string) {
   return request<LuaStatusResponse>(`/api/sessions/${sessionId}/lua/status?ts=${Date.now()}`)
+}
+
+export function deleteSession(sessionId: string) {
+  return request<{ ok?: boolean; message?: string }>(`/api/sessions/${sessionId}`, {
+    method: "DELETE",
+  })
 }

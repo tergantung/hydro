@@ -34,6 +34,7 @@ use crate::protocol;
 use crate::world;
 
 pub mod automine;
+pub mod autonether;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RUNTIME_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -138,6 +139,17 @@ impl SessionManager {
             None => Ok(lua_runtime::idle_status()),
         }
     }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        // Stop any running lua script first
+        let _ = self.stop_lua_script(session_id).await;
+        // Remove the session
+        if self.sessions.remove(session_id).is_some() {
+            Ok(())
+        } else {
+            Err("session not found".to_string())
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -205,6 +217,7 @@ impl BotSession {
             collect_cooldowns: CollectCooldowns::default(),
             rate_limit_until: None,
             current_target: None,
+            autonether: autonether::AutonetherState::new(),
         }));
 
         let session = Arc::new(Self {
@@ -469,6 +482,21 @@ impl BotSession {
     pub async fn queue_stop_automine(&self) -> Result<String, String> {
         self.send_command(SessionCommand::StopAutomine).await?;
         Ok("automine stop queued".to_string())
+    }
+
+    pub async fn queue_start_autonether(&self) -> Result<String, String> {
+        self.send_command(SessionCommand::StartAutonether).await?;
+        Ok("autonether start queued".to_string())
+    }
+
+    pub async fn queue_stop_autonether(&self) -> Result<String, String> {
+        self.send_command(SessionCommand::StopAutonether).await?;
+        Ok("autonether stop queued".to_string())
+    }
+
+    pub async fn autonether_status(&self) -> Result<crate::session::autonether::AutonetherStatusSnapshot, String> {
+        let state = self.state.read().await;
+        Ok(state.autonether.snapshot())
     }
 
     pub(crate) async fn walk(
@@ -871,6 +899,7 @@ impl BotSession {
         let mut spam_stop_tx: Option<watch::Sender<bool>> = None;
         let mut fishing_stop_tx: Option<watch::Sender<bool>> = None;
         let mut automine_stop_tx: Option<watch::Sender<bool>> = None;
+        let mut autonether_stop_tx: Option<watch::Sender<bool>> = None;
 
         while let Some(event) = rx.recv().await {
             match event {
@@ -1199,6 +1228,36 @@ impl BotSession {
                     SessionCommand::StopAutomine => {
                         stop_background_worker(&mut automine_stop_tx);
                         self.state.write().await.current_target = None;
+                    }
+                    SessionCommand::StartAutonether => {
+                        stop_background_worker(&mut autonether_stop_tx);
+                        let Some(_active) = &runtime else {
+                            self.set_error("connect the session before starting autonether".to_string()).await;
+                            continue;
+                        };
+                        {
+                            let mut state = self.state.write().await;
+                            state.autonether.start();
+                        }
+                        let (stop_tx, stop_rx) = watch::channel(false);
+                        autonether_stop_tx = Some(stop_tx);
+                        let session = Arc::clone(&self);
+                        let logger = self.logger.clone();
+                        let session_id = self.id.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = autonether::autonether_loop(
+                                &session_id,
+                                &logger,
+                                session,
+                                stop_rx,
+                            ).await {
+                                logger.error("autonether", Some(&session_id), error);
+                            }
+                        });
+                    }
+                    SessionCommand::StopAutonether => {
+                        stop_background_worker(&mut autonether_stop_tx);
+                        self.state.write().await.autonether.stop();
                     }
                     SessionCommand::DropItem {
                         block_id,
@@ -2945,6 +3004,7 @@ struct SessionState {
     rate_limit_until: Option<Instant>,
     current_target: Option<BotTarget>,
     world_items: Vec<crate::world::DecodedWorldItem>,
+    autonether: autonether::AutonetherState,
 }
 
 #[derive(Debug)]
@@ -2989,6 +3049,8 @@ enum SessionCommand {
     },
     StartAutomine,
     StopAutomine,
+    StartAutonether,
+    StopAutonether,
 }
 
 #[derive(Debug)]

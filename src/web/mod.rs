@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderMap, Method, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde_json::json;
 use tokio::sync::{broadcast, RwLock};
@@ -112,17 +112,21 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/spam/stop", post(stop_spam))
         .route("/api/sessions/{id}/automine/start", post(start_automine))
         .route("/api/sessions/{id}/automine/stop", post(stop_automine))
+        .route("/api/sessions/{id}/autonether/start", post(start_autonether))
+        .route("/api/sessions/{id}/autonether/stop", post(stop_autonether))
+        .route("/api/sessions/{id}/autonether/status", get(get_autonether_status))
         .route("/api/sessions/{id}/lua/start", post(start_lua_script))
         .route("/api/sessions/{id}/lua/stop", post(stop_lua_script))
         .route("/api/sessions/{id}/lua/status", get(get_lua_status))
         .route("/api/sessions/{id}/minimap", get(get_minimap))
+        .route("/api/sessions/{id}", delete(delete_session))
         .route("/ws", get(websocket_handler))
         .route_service("/block_types.json", ServeFile::new(block_types_file))
         .fallback_service(ServeDir::new(dist_dir).not_found_service(ServeFile::new(dist_index)))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST])
+                .allow_methods([Method::GET, Method::POST, Method::DELETE])
                 .allow_headers(Any),
         )
         .layer(middleware::from_fn_with_state(
@@ -389,6 +393,21 @@ async fn disconnect_session(
     Ok(Json(json!({
         "result": ApiMessage { ok: true, message: "disconnect queued".to_string() },
         "session": session.snapshot().await
+    })))
+}
+
+async fn delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state
+        .session_manager
+        .delete_session(&id)
+        .await
+        .map_err(|_| ApiError::not_found("session not found"))?;
+    Ok(Json(json!({
+        "ok": true,
+        "message": "session deleted"
     })))
 }
 
@@ -719,6 +738,60 @@ async fn stop_automine(
         "result": ApiMessage { ok: true, message },
         "session": session.snapshot().await
     })))
+}
+
+async fn start_autonether(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let message = session
+        .queue_start_autonether()
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "result": ApiMessage { ok: true, message },
+        "session": session.snapshot().await
+    })))
+}
+
+async fn stop_autonether(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let message = session
+        .queue_stop_autonether()
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "result": ApiMessage { ok: true, message },
+        "session": session.snapshot().await
+    })))
+}
+
+async fn get_autonether_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let status = session
+        .autonether_status()
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({ "status": status })))
 }
 
 async fn start_lua_script(
