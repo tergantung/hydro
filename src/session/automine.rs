@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use rand::RngExt;
 
 use tokio::sync::{watch, RwLock};
 
@@ -185,11 +186,17 @@ pub(super) async fn automine_loop(
 
     loop {
         let ping = { state.read().await.ping_ms.unwrap_or(0) };
-        let base_delay = 800;
-        let dynamic_delay = if ping > 150 {
-            base_delay + (ping - 100)
-        } else {
-            base_delay
+        let base_delay = 850;
+        let dynamic_delay = {
+            let mut rng = rand::rng();
+            let jitter = rng.random_range(0..350);
+            let thinking_pause = if rng.random_bool(0.05) { 500 } else { 0 };
+
+            if ping > 150 {
+                base_delay + (ping - 100) + jitter + thinking_pause
+            } else {
+                base_delay + jitter + thinking_pause
+            }
         };
         let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay as u64))
             .saturating_duration_since(Instant::now());
@@ -542,13 +549,11 @@ pub(super) async fn automine_loop(
                                             continue;
                                         }
 
-                                        _logger.info("automine", Some(&_session_id), format!("MINING: Clearing path tile ({}, {})", next_step.0, next_step.1));
-                                        let pkts = protocol::make_mine_move_and_hit(
+                                        _logger.info("automine", Some(&_session_id), format!("MINING: Path blocked at ({}, {}), hitting from ({}, {})", next_step.0, next_step.1, player_x, player_y));
+                                        let pkts = protocol::make_mine_hit_stationary(
                                             player_x, player_y,
-                                            player_x, player_y, // Do not move INTO the solid block
                                             next_step.0, next_step.1,
                                             dir,
-                                            movement::ANIM_HIT,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
                                         record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
@@ -559,9 +564,14 @@ pub(super) async fn automine_loop(
                                             st.pending_hits.insert((next_step.0, next_step.1), Instant::now());
                                         }
                                     } else {
-                                        // Pure movement: pick the anim that physically describes
-                                        // this single-tile transition.
-                                        let anim = movement::ANIM_FALL;
+                                        // Pure movement: pick the anim that physically describes this transition.
+                                        let anim = if next_step.1 > player_y {
+                                            movement::ANIM_FALL // Moving down
+                                        } else if next_step.1 < player_y {
+                                            movement::ANIM_JUMP // Moving up
+                                        } else {
+                                            movement::ANIM_WALK // Moving horizontal
+                                        };
 
                                         let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
