@@ -70,6 +70,10 @@ import {
   talk,
   wearItem,
   dropItem,
+  deleteSession,
+  startAutonether,
+  stopAutonether,
+  getAutonetherStatus,
   type ActionResponse,
 } from "@/lib/api"
 import {
@@ -137,6 +141,7 @@ function App() {
   const [luaStatuses, setLuaStatuses] = useState<Record<string, LuaScriptStatusSnapshot | null>>(
     {},
   )
+  const [autonetherStatuses, setAutonetherStatuses] = useState<Record<string, { active: boolean; phase: string } | null>>({})
   const [hoverTiles, setHoverTiles] = useState<Record<string, string>>({})
   const [dropAmounts, setDropAmounts] = useState<Record<string, string>>({})
 
@@ -379,6 +384,21 @@ function App() {
     }
   }, [])
 
+  const refreshAutonetherStatus = useCallback(async (sessionId: string) => {
+    try {
+      const payload = await getAutonetherStatus(sessionId)
+      setAutonetherStatuses((current) => ({
+        ...current,
+        [sessionId]: payload.status ?? null,
+      }))
+    } catch {
+      setAutonetherStatuses((current) => ({
+        ...current,
+        [sessionId]: null,
+      }))
+    }
+  }, [])
+
   useEffect(() => {
     sessions.forEach((session) => {
       if (
@@ -398,6 +418,12 @@ function App() {
       void refreshLuaStatus(session.id)
     })
   }, [refreshLuaStatus, sessions])
+
+  useEffect(() => {
+    sessions.forEach((session) => {
+      void refreshAutonetherStatus(session.id)
+    })
+  }, [refreshAutonetherStatus, sessions])
 
   const runAction = useCallback(
     async (action: () => Promise<ActionResponse>) => {
@@ -633,156 +659,249 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.25_0.12_260),oklch(0.02_0.02_240))] text-foreground selection:bg-primary/30">
-      <div className="mx-auto grid max-w-[1800px] gap-6 px-4 py-6 xl:grid-cols-[380px_1fr]">
-        <Card className="glass xl:sticky xl:top-6 xl:self-start overflow-hidden border-white/10 shadow-2xl">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-              <Moon className="size-6 text-primary" />
-              <span className="text-gradient">Moonlight</span>
-            </CardTitle>
-            <CardDescription>
-              Create sessions, then manage every bot from its own panel.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="grid gap-2">
-              <label className="text-xs text-muted-foreground">Auth Kind</label>
-              <Select
-                value={authKind}
-                onValueChange={(value) => setAuthKind(value as AuthKind)}
-              >
-                <SelectTrigger className="w-full rounded-xl border-white/10 bg-white/5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="android_device">Android Device</SelectItem>
-                  <SelectItem value="jwt">JWT</SelectItem>
-                  <SelectItem value="email_password">Email + Password</SelectItem>
-                </SelectContent>
-              </Select>
+      <div className="flex h-screen">
+        {/* Left Sidebar */}
+        <div className="w-80 flex flex-col border-r border-white/10 bg-black/20 backdrop-blur-md">
+          {/* Create Session Section */}
+          <div className="border-b border-white/10 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Moon className="size-4 text-primary" />
+              <h2 className="font-bold text-sm">Create Session</h2>
             </div>
-
-            <div className="grid gap-2">
-              <label className="text-xs text-muted-foreground">Device ID</label>
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                <Input
-                  value={deviceId}
-                  onChange={(event) => setDeviceId(event.target.value)}
-                  placeholder="57ce..."
-                  className="rounded-xl border-white/10 bg-white/5"
-                />
-                <Button
-                  variant="outline"
-                  className="rounded-xl border-white/10 bg-white/5"
-                  onClick={() => setDeviceId(generateDeviceId())}
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] text-muted-foreground">Auth Kind</label>
+                <Select
+                  value={authKind}
+                  onValueChange={(value) => setAuthKind(value as AuthKind)}
                 >
-                  Generate
-                </Button>
+                  <SelectTrigger className="w-full rounded-lg border-white/10 bg-white/5 h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="android_device">Android Device</SelectItem>
+                    <SelectItem value="jwt">JWT</SelectItem>
+                    <SelectItem value="email_password">Email + Password</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-muted-foreground">Device ID</label>
+                <div className="flex gap-1">
+                  <Input
+                    value={deviceId}
+                    onChange={(event) => setDeviceId(event.target.value)}
+                    placeholder="57ce..."
+                    className="rounded-lg border-white/10 bg-white/5 h-8 text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-lg border-white/10 bg-white/5 h-8 px-2 text-xs"
+                    onClick={() => setDeviceId(generateDeviceId())}
+                  >
+                    Gen
+                  </Button>
+                </div>
+              </div>
+
+              {authKind === "jwt" ? (
+                <div>
+                  <label className="text-[10px] text-muted-foreground">JWT</label>
+                  <Textarea
+                    value={jwt}
+                    onChange={(event) => setJwt(event.target.value)}
+                    rows={3}
+                    placeholder="eyJ..."
+                    className="rounded-lg border-white/10 bg-white/5 text-xs"
+                  />
+                </div>
+              ) : null}
+
+              {authKind === "email_password" ? (
+                <>
+                  <div>
+                    <label className="text-[10px] text-muted-foreground">Email</label>
+                    <Input
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      placeholder="you@example.com"
+                      className="rounded-lg border-white/10 bg-white/5 h-8 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-muted-foreground">Password</label>
+                    <Input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      className="rounded-lg border-white/10 bg-white/5 h-8 text-xs"
+                    />
+                  </div>
+                </>
+              ) : null}
+
+              <Button
+                onClick={() => void handleConnect()}
+                disabled={connecting}
+                className="w-full rounded-lg h-8 text-xs"
+              >
+                {connecting ? <SpinnerGap className="size-3 animate-spin" /> : <Plug className="size-3" />}
+                Connect
+              </Button>
+
+              {feedback ? (
+                <div
+                  className={`rounded-lg border px-2 py-1.5 text-[10px] ${
+                    feedback.kind === "error"
+                      ? "border-red-500/30 bg-red-500/10 text-red-100"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+                  }`}
+                >
+                  {feedback.message}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Bot List Section */}
+          <div className="flex-1 overflow-y-auto p-4">
+            <div className="mb-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Plug className="size-4 text-primary" />
+                <h2 className="font-bold text-sm">Bot List</h2>
+              </div>
+              <div className="space-y-2">
+                {sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`rounded-lg border transition-all ${
+                      activeSessionId === session.id
+                        ? "border-primary/50 bg-primary/10"
+                        : "border-white/10 bg-white/5"
+                    }`}
+                  >
+                    <button
+                      onClick={() => setActiveSessionId(session.id)}
+                      className="w-full text-left p-2"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-bold text-xs truncate flex-1">{session.id}</span>
+                        <Badge
+                          variant={statusVariant(session.status)}
+                          className="rounded-full px-1.5 text-[8px] font-bold uppercase"
+                        >
+                          {session.status}
+                        </Badge>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {session.username ?? "No user"}
+                      </div>
+                    </button>
+                    <div className="px-2 pb-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full rounded-md border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 h-6 text-[10px]"
+                        onClick={async () => {
+                          if (confirm(`Delete session ${session.id}?`)) {
+                            try {
+                              await deleteSession(session.id)
+                              setSessions((current) =>
+                                current.filter((s) => s.id !== session.id)
+                              )
+                              setFeedback({
+                                kind: "success",
+                                message: `Session ${session.id} deleted`,
+                              })
+                            } catch (error) {
+                              setFeedback({
+                                kind: "error",
+                                message:
+                                  error instanceof Error
+                                    ? error.message
+                                    : "delete failed",
+                              })
+                            }
+                          }
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {sessions.length === 0 && (
+                  <div className="text-xs text-muted-foreground text-center py-4">
+                    No bots yet
+                  </div>
+                )}
               </div>
             </div>
+          </div>
 
-            {authKind === "jwt" ? (
-              <div className="grid gap-2">
-                <label className="text-xs text-muted-foreground">JWT</label>
-                <Textarea
-                  value={jwt}
-                  onChange={(event) => setJwt(event.target.value)}
-                  rows={6}
-                  placeholder="eyJ..."
-                  className="rounded-xl border-white/10 bg-white/5"
-                />
-              </div>
-            ) : null}
-
-            {authKind === "email_password" ? (
-              <div className="grid gap-4">
-                <div className="grid gap-2">
-                  <label className="text-xs text-muted-foreground">Email</label>
-                  <Input
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    placeholder="you@example.com"
-                    className="rounded-xl border-white/10 bg-white/5"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <label className="text-xs text-muted-foreground">Password</label>
-                  <Input
-                    type="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="rounded-xl border-white/10 bg-white/5"
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            <Button
-              onClick={() => void handleConnect()}
-              disabled={connecting}
-              className="rounded-xl"
-            >
-              {connecting ? <SpinnerGap className="size-4 animate-spin" /> : <Plug className="size-4" />}
-              Connect
-            </Button>
+          {/* Scripting Section */}
+          <div className="border-t border-white/10 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Bug className="size-4 text-primary" />
+              <h2 className="font-bold text-sm">Scripting</h2>
+            </div>
             <Button
               variant="outline"
-              onClick={() => void handleDashboardLogout()}
-              disabled={dashboardBusy}
-              className="rounded-xl border-white/10 bg-white/5"
+              className="w-full rounded-lg border-white/10 bg-white/5 text-xs"
+              onClick={() => {
+                // Scroll to scripting section or open scripting dialog
+                const scriptSection = document.querySelector('[data-section="scripting"]')
+                scriptSection?.scrollIntoView({ behavior: 'smooth' })
+              }}
             >
-              {dashboardBusy ? <SpinnerGap className="size-4 animate-spin" /> : <Plug className="size-4" />}
-              Lock Dashboard
+              Open Lua Editor
             </Button>
+          </div>
 
-            {feedback ? (
-              <div
-                className={`rounded-xl border px-3 py-2 text-xs ${
-                  feedback.kind === "error"
-                    ? "border-red-500/30 bg-red-500/10 text-red-100"
-                    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
-                }`}
+          {/* Settings Section */}
+          <div className="border-t border-white/10 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Gear className="size-4 text-primary" />
+              <h2 className="font-bold text-sm">Settings</h2>
+            </div>
+            <div className="space-y-2">
+              <Button
+                variant="outline"
+                onClick={() => void handleDashboardLogout()}
+                disabled={dashboardBusy}
+                className="w-full rounded-lg border-white/10 bg-white/5 text-xs"
               >
-                {feedback.message}
+                {dashboardBusy ? <SpinnerGap className="size-3 animate-spin" /> : <Plug className="size-3" />}
+                Lock Dashboard
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Content Area */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-[1400px] p-6">
+            {/* Header */}
+            <div className="mb-6">
+              <div className="flex items-center gap-3 mb-2">
+                <Moon className="size-8 text-primary" />
+                <h1 className="text-3xl font-bold tracking-tight text-gradient">Moonlight Dashboard</h1>
               </div>
-            ) : null}
-          </CardContent>
-        </Card>
+              <p className="text-sm text-muted-foreground">
+                Manage your bot sessions, automation, and scripting from one place.
+              </p>
+            </div>
 
-        <div className="grid gap-6">
-
-
-          <div className="grid gap-4">
+            {/* Bot Session Details */}
+            <div className="grid gap-4">
             {sessions.length ? (
               <Tabs
                 value={activeSessionId}
                 onValueChange={setActiveSessionId}
                 className="gap-4"
               >
-                <div className="-mx-1 overflow-x-auto px-1">
-                  <TabsList
-                    className="flex w-max min-w-full gap-2 rounded-2xl border border-white/5 bg-black/20 p-2 backdrop-blur-md"
-                  >
-                    {sessions.map((session) => (
-                      <TabsTrigger
-                        key={session.id}
-                        value={session.id}
-                        className="flex-none rounded-xl border border-white/5 bg-white/5 px-4 py-2 transition-all data-active:border-primary/50 data-active:bg-primary/10 data-active:text-primary-foreground"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="font-bold tracking-tight">{session.id}</span>
-                          <Badge
-                            variant={statusVariant(session.status)}
-                            className="rounded-full px-2 text-[9px] font-bold uppercase"
-                          >
-                            {session.status}
-                          </Badge>
-                        </div>
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                </div>
-
                 {sessions.map((session) => {
                   if (activeSessionId !== session.id) {
                     return <TabsContent key={session.id} value={session.id} />
@@ -824,34 +943,456 @@ function App() {
                         </CardHeader>
 
                         <CardContent className="grid gap-4">
+                          {/* Cheat Features - Organized by Category */}
+                          <Tabs defaultValue="world" className="w-full">
+                            <TabsList className="grid w-full grid-cols-4 rounded-xl border border-white/10 bg-black/20 p-1">
+                              <TabsTrigger value="world" className="rounded-lg data-active:bg-primary/20">
+                                World
+                              </TabsTrigger>
+                              <TabsTrigger value="automation" className="rounded-lg data-active:bg-primary/20">
+                                Automation
+                              </TabsTrigger>
+                              <TabsTrigger value="chat" className="rounded-lg data-active:bg-primary/20">
+                                Chat
+                              </TabsTrigger>
+                              <TabsTrigger value="advanced" className="rounded-lg data-active:bg-primary/20">
+                                Advanced
+                              </TabsTrigger>
+                            </TabsList>
+
+                            {/* World & Navigation Tab */}
+                            <TabsContent value="world" className="mt-4 space-y-3">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <NavigationArrow className="size-3.5" />
+                                  World Navigation
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                                  <Input
+                                    value={inputs.world}
+                                    onChange={(event) =>
+                                      mutateSessionInput(session.id, "world", event.target.value)
+                                    }
+                                    placeholder="World name"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                  />
+                                  <Button
+                                    className="rounded-xl"
+                                    onClick={() =>
+                                      void runAction(() => joinWorld(session.id, inputs.world))
+                                    }
+                                  >
+                                    Join
+                                  </Button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() => void runAction(() => leaveWorld(session.id))}
+                                  >
+                                    Leave
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() => disconnectSession(session.id))
+                                    }
+                                  >
+                                    Disconnect
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() => reconnectSession(session.id))
+                                    }
+                                  >
+                                    Reconnect
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() => automateTutorial(session.id))
+                                    }
+                                  >
+                                    Tutorial
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <GameController className="size-3.5" />
+                                  Movement Matrix
+                                </div>
+                                <div className="grid gap-2">
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <div />
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() =>
+                                        void runAction(() => moveSession(session.id, "up"))
+                                      }
+                                    >
+                                      Up
+                                    </Button>
+                                    <div />
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() =>
+                                        void runAction(() => moveSession(session.id, "left"))
+                                      }
+                                    >
+                                      Left
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() =>
+                                        void runAction(() => moveSession(session.id, "down"))
+                                      }
+                                    >
+                                      Down
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() =>
+                                        void runAction(() => moveSession(session.id, "right"))
+                                      }
+                                    >
+                                      Right
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            </TabsContent>
+
+                            {/* Automation Tab */}
+                            <TabsContent value="automation" className="mt-4 space-y-3">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Moon className="size-3.5" />
+                                  Moonlight Automine
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold hover:bg-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]"
+                                    onClick={() => void runAction(() => startAutomine(session.id))}
+                                  >
+                                    Engage Automine
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 font-bold hover:bg-rose-500/20 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]"
+                                    onClick={() => void runAction(() => stopAutomine(session.id))}
+                                  >
+                                    Disengage
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Fish className="size-3.5" />
+                                  Automated Fishing
+                                </div>
+                                <Input
+                                  value={inputs.bait}
+                                  onChange={(event) =>
+                                    mutateSessionInput(session.id, "bait", event.target.value)
+                                  }
+                                  placeholder="Bait name or lure name"
+                                  className="rounded-xl border-white/10 bg-white/5"
+                                />
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() =>
+                                        startFishing(session.id, "left", inputs.bait),
+                                      )
+                                    }
+                                  >
+                                    Fish Left
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() =>
+                                        startFishing(session.id, "right", inputs.bait),
+                                      )
+                                    }
+                                  >
+                                    Fish Right
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() => void runAction(() => stopFishing(session.id))}
+                                  >
+                                    Stop
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Waves className="size-3.5" />
+                                  Autonether (Nether Farming)
+                                </div>
+                                <div className="text-xs text-muted-foreground mb-2">
+                                  Automatically enters NETHERWORLD, collects Nether Keys, and exits through portal. Requires Nether Scroll in inventory.
+                                </div>
+                                <div className="grid gap-1 rounded-xl border border-white/10 bg-white/4 p-3 text-xs text-muted-foreground">
+                                  <div>
+                                    Status:{" "}
+                                    <span
+                                      className={
+                                        autonetherStatuses[session.id]?.active
+                                          ? "text-emerald-300"
+                                          : "text-slate-200"
+                                      }
+                                    >
+                                      {autonetherStatuses[session.id]?.active ? "running" : "idle"}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    Phase: {autonetherStatuses[session.id]?.phase ?? "idle"}
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-purple-500/40 bg-purple-500/10 text-purple-300 font-bold hover:bg-purple-500/20 shadow-[0_0_15px_-3px_rgba(168,85,247,0.3)]"
+                                    onClick={() => void runAction(() => startAutonether(session.id))}
+                                  >
+                                    Start Autonether
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 font-bold hover:bg-rose-500/20 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]"
+                                    onClick={() => void runAction(() => stopAutonether(session.id))}
+                                  >
+                                    Stop
+                                  </Button>
+                                </div>
+                              </div>
+                            </TabsContent>
+
+                            {/* Chat Tab */}
+                            <TabsContent value="chat" className="mt-4 space-y-3">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <ChatCenteredDots className="size-3.5" />
+                                  Chat Messages
+                                </div>
+                                <div className="grid gap-2">
+                                  <Input
+                                    value={inputs.chat}
+                                    onChange={(event) =>
+                                      mutateSessionInput(session.id, "chat", event.target.value)
+                                    }
+                                    placeholder="Say something in world chat"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                  />
+                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() => void runAction(() => talk(session.id, inputs.chat))}
+                                    >
+                                      Send Chat
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="rounded-xl border-white/10 bg-white/5"
+                                      onClick={() => mutateSessionInput(session.id, "chat", "")}
+                                    >
+                                      Clear
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <ChatCenteredDots className="size-3.5" />
+                                  Auto Spam
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Repeats the same world chat message with your chosen delay.
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                                  <Input
+                                    value={inputs.spam}
+                                    onChange={(event) =>
+                                      mutateSessionInput(session.id, "spam", event.target.value)
+                                    }
+                                    placeholder="Spam message"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                  />
+                                  <Input
+                                    type="number"
+                                    min="0.25"
+                                    step="0.25"
+                                    value={inputs.spamDelay}
+                                    onChange={(event) =>
+                                      mutateSessionInput(session.id, "spamDelay", event.target.value)
+                                    }
+                                    placeholder="5"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                  />
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  Delay in seconds.
+                                </div>
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runAction(() =>
+                                        startSpam(
+                                          session.id,
+                                          inputs.spam,
+                                          parseSpamDelayMs(inputs.spamDelay),
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    Start Spam
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() => void runAction(() => stopSpam(session.id))}
+                                  >
+                                    Stop Spam
+                                  </Button>
+                                </div>
+                              </div>
+                            </TabsContent>
+
+                            {/* Advanced Tab */}
+                            <TabsContent value="advanced" className="mt-4 space-y-3">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4" data-section="scripting">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Bug className="size-3.5" />
+                                  Lua Script Engine
+                                </div>
+                                <Textarea
+                                  value={inputs.luaSource}
+                                  onChange={(event) =>
+                                    mutateSessionInput(session.id, "luaSource", event.target.value)
+                                  }
+                                  rows={10}
+                                  placeholder={"bot:talk(\"hello\")\nbot:sleep(500)\nlocal world = bot:getWorld()"}
+                                  className="rounded-xl border-white/10 bg-white/5 font-mono text-[11px]"
+                                />
+                                <div className="grid gap-1 rounded-xl border border-white/10 bg-white/4 p-3 text-xs text-muted-foreground">
+                                  <div>
+                                    Status:{" "}
+                                    <span
+                                      className={
+                                        luaStatuses[session.id]?.running
+                                          ? "text-emerald-300"
+                                          : "text-slate-200"
+                                      }
+                                    >
+                                      {luaStatuses[session.id]?.running ? "running" : "idle"}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    Started: {formatLuaTime(luaStatuses[session.id]?.started_at ?? null)}
+                                  </div>
+                                  <div>
+                                    Finished: {formatLuaTime(luaStatuses[session.id]?.finished_at ?? null)}
+                                  </div>
+                                  <div>
+                                    Last Result: {luaStatuses[session.id]?.last_result_message ?? "-"}
+                                  </div>
+                                  <div
+                                    className={
+                                      luaStatuses[session.id]?.last_error ? "text-rose-300" : undefined
+                                    }
+                                  >
+                                    Last Error: {luaStatuses[session.id]?.last_error ?? "-"}
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runLuaAction(session.id, () =>
+                                        startLuaScript(session.id, inputs.luaSource),
+                                      )
+                                    }
+                                  >
+                                    Run Script
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() =>
+                                      void runLuaAction(session.id, () => stopLuaScript(session.id))
+                                    }
+                                  >
+                                    Stop Script
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
+                                    onClick={() => void refreshLuaStatus(session.id)}
+                                  >
+                                    Refresh
+                                  </Button>
+                                </div>
+                              </div>
+                            </TabsContent>
+                          </Tabs>
+
+                          {/* Minimap & Inventory - Always Visible */}
                           <div className="grid gap-3 xl:grid-cols-[minmax(320px,1.15fr)_minmax(320px,.85fr)]">
                             <div className="grid gap-3">
-                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
                                 <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                                   <Waves className="size-3.5" />
                                   Minimap & Spatial Position
                                 </div>
-                            <MinimapPanel
-                              minimap={minimap}
-                              aiEnemies={session.ai_enemies}
-                              otherPlayers={session.other_players}
-                              playerPosition={session.player_position}
-                              currentWorld={session.current_world}
-                              currentTarget={session.current_target}
-                              collectables={session.collectables}
-                              onHoverChange={getHoverChange(session.id)}
-                            />
-                            <div className="text-xs text-muted-foreground">
-                              {hoverTiles[session.id] ?? "Hover a tile to inspect it."}
-                            </div>
+                                <MinimapPanel
+                                  minimap={minimap}
+                                  aiEnemies={session.ai_enemies}
+                                  otherPlayers={session.other_players}
+                                  playerPosition={session.player_position}
+                                  currentWorld={session.current_world}
+                                  currentTarget={session.current_target}
+                                  collectables={session.collectables}
+                                  onHoverChange={getHoverChange(session.id)}
+                                />
+                                <div className="text-xs text-muted-foreground">
+                                  {hoverTiles[session.id] ?? "Hover a tile to inspect it."}
+                                </div>
                               </div>
+                            </div>
 
-                                <div className="grid gap-2 rounded-2xl glass-dark p-4">
+                            <div className="grid gap-2 rounded-2xl glass-dark p-4">
                               <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                                 <Gear className="size-3.5" />
                                 Inventory Storage
                               </div>
-                            <div className="flex flex-wrap gap-2">
+                              <div className="flex flex-wrap gap-2">
                               {session.inventory.length ? (
                                 session.inventory.map((item) => {
                                   const blockName = blockNames[String(item.block_id)]
@@ -944,352 +1485,8 @@ function App() {
                                 </div>
                               )}
                             </div>
-                              </div>
-                            </div>
-
-                            <div className="grid gap-3">
-                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                                <NavigationArrow className="size-3.5" />
-                                World Navigation
-                              </div>
-                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                              <Input
-                                value={inputs.world}
-                                onChange={(event) =>
-                                  mutateSessionInput(session.id, "world", event.target.value)
-                                }
-                                placeholder="World name"
-                                className="rounded-xl border-white/10 bg-white/5"
-                              />
-                              <Button
-                                className="rounded-xl"
-                                onClick={() =>
-                                  void runAction(() => joinWorld(session.id, inputs.world))
-                                }
-                              >
-                                Join
-                              </Button>
-                            </div>
-                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() => void runAction(() => leaveWorld(session.id))}
-                              >
-                                Leave
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runAction(() => disconnectSession(session.id))
-                                }
-                              >
-                                Disconnect
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runAction(() => reconnectSession(session.id))
-                                }
-                              >
-                                Reconnect
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runAction(() => automateTutorial(session.id))
-                                }
-                              >
-                                Tutorial
-                              </Button>
-                            </div>
-                              </div>
-
-                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                                <GameController className="size-3.5" />
-                                Movement Matrix
-                              </div>
-                            <div className="grid gap-2">
-                              <div className="grid grid-cols-3 gap-2">
-                                <div />
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() =>
-                                    void runAction(() => moveSession(session.id, "up"))
-                                  }
-                                >
-                                  Up
-                                </Button>
-                                <div />
-                              </div>
-                              <div className="grid grid-cols-3 gap-2">
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() =>
-                                    void runAction(() => moveSession(session.id, "left"))
-                                  }
-                                >
-                                  Left
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() =>
-                                    void runAction(() => moveSession(session.id, "down"))
-                                  }
-                                >
-                                  Down
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() =>
-                                    void runAction(() => moveSession(session.id, "right"))
-                                  }
-                                >
-                                  Right
-                                </Button>
-                              </div>
-                            </div>
-                              </div>
-
-                                <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                                <Fish className="size-3.5" />
-                                Automated Extraction (Fishing)
-                              </div>
-                            <Input
-                              value={inputs.bait}
-                              onChange={(event) =>
-                                mutateSessionInput(session.id, "bait", event.target.value)
-                              }
-                              placeholder="Bait name or lure name"
-                              className="rounded-xl border-white/10 bg-white/5"
-                            />
-                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runAction(() =>
-                                    startFishing(session.id, "left", inputs.bait),
-                                  )
-                                }
-                              >
-                                Fish Left
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runAction(() =>
-                                    startFishing(session.id, "right", inputs.bait),
-                                  )
-                                }
-                              >
-                                Fish Right
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() => void runAction(() => stopFishing(session.id))}
-                              >
-                                Stop
-                              </Button>
-                            </div>
-                              </div>
-
-                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                              <ChatCenteredDots className="size-3.5" />
-                              Chat And Spam
-                            </div>
-                            <div className="grid gap-2">
-                              <Input
-                                value={inputs.chat}
-                                onChange={(event) =>
-                                  mutateSessionInput(session.id, "chat", event.target.value)
-                                }
-                                placeholder="Say something in world chat"
-                                className="rounded-xl border-white/10 bg-white/5"
-                              />
-                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() => void runAction(() => talk(session.id, inputs.chat))}
-                                >
-                                  Send Chat
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() => mutateSessionInput(session.id, "chat", "")}
-                                >
-                                  Clear
-                                </Button>
-                              </div>
-                            </div>
-                            <div className="grid gap-2">
-                              <div className="text-xs text-muted-foreground">
-                                Repeats the same world chat message with your chosen delay.
-                              </div>
-                              <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
-                                <Input
-                                  value={inputs.spam}
-                                  onChange={(event) =>
-                                    mutateSessionInput(session.id, "spam", event.target.value)
-                                  }
-                                  placeholder="Spam message"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                />
-                                <Input
-                                  type="number"
-                                  min="0.25"
-                                  step="0.25"
-                                  value={inputs.spamDelay}
-                                  onChange={(event) =>
-                                    mutateSessionInput(session.id, "spamDelay", event.target.value)
-                                  }
-                                  placeholder="5"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                />
-                              </div>
-                              <div className="text-[11px] text-muted-foreground">
-                                Delay in seconds.
-                              </div>
-                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() =>
-                                    void runAction(() =>
-                                      startSpam(
-                                        session.id,
-                                        inputs.spam,
-                                        parseSpamDelayMs(inputs.spamDelay),
-                                      ),
-                                    )
-                                  }
-                                >
-                                  Start Spam
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  className="rounded-xl border-white/10 bg-white/5"
-                                  onClick={() => void runAction(() => stopSpam(session.id))}
-                                >
-                                  Stop Spam
-                                </Button>
-                              </div>
-                            </div>
                           </div>
-
-                          <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                              <Moon className="size-3.5" />
-                              Moonlight Automine
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <Button
-                                 variant="outline"
-                                 className="rounded-xl border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold hover:bg-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]"
-                                 onClick={() => void runAction(() => startAutomine(session.id))}
-                               >
-                                 Engage Automine
-                               </Button>
-                               <Button
-                                 variant="outline"
-                                 className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 font-bold hover:bg-rose-500/20 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]"
-                                 onClick={() => void runAction(() => stopAutomine(session.id))}
-                               >
-                                 Disengage
-                               </Button>
-                            </div>
-                          </div>
-                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                              <Bug className="size-3.5" />
-                              Lua Script
-                            </div>
-                            <Textarea
-                              value={inputs.luaSource}
-                              onChange={(event) =>
-                                mutateSessionInput(session.id, "luaSource", event.target.value)
-                              }
-                              rows={10}
-                              placeholder={"bot:talk(\"hello\")\nbot:sleep(500)\nlocal world = bot:getWorld()"}
-                              className="rounded-xl border-white/10 bg-white/5 font-mono text-[11px]"
-                            />
-                            <div className="grid gap-1 rounded-xl border border-white/10 bg-white/4 p-3 text-xs text-muted-foreground">
-                              <div>
-                                Status:{" "}
-                                <span
-                                  className={
-                                    luaStatuses[session.id]?.running
-                                      ? "text-emerald-300"
-                                      : "text-slate-200"
-                                  }
-                                >
-                                  {luaStatuses[session.id]?.running ? "running" : "idle"}
-                                </span>
-                              </div>
-                              <div>
-                                Started: {formatLuaTime(luaStatuses[session.id]?.started_at ?? null)}
-                              </div>
-                              <div>
-                                Finished: {formatLuaTime(luaStatuses[session.id]?.finished_at ?? null)}
-                              </div>
-                              <div>
-                                Last Result: {luaStatuses[session.id]?.last_result_message ?? "-"}
-                              </div>
-                              <div
-                                className={
-                                  luaStatuses[session.id]?.last_error ? "text-rose-300" : undefined
-                                }
-                              >
-                                Last Error: {luaStatuses[session.id]?.last_error ?? "-"}
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runLuaAction(session.id, () =>
-                                    startLuaScript(session.id, inputs.luaSource),
-                                  )
-                                }
-                              >
-                                Run Script
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() =>
-                                  void runLuaAction(session.id, () => stopLuaScript(session.id))
-                                }
-                              >
-                                Stop Script
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="rounded-xl border-white/10 bg-white/5"
-                                onClick={() => void refreshLuaStatus(session.id)}
-                              >
-                                Refresh
-                              </Button>
-                            </div>
-                              </div>
-                            </div>
-                          </div>
+                        </div>
                         </CardContent>
                       </Card>
                     </TabsContent>
@@ -1299,13 +1496,14 @@ function App() {
             ) : (
               <Card className="border-white/10 bg-card/90 ring-white/10">
                 <CardContent className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No sessions yet. Create a bot from the panel on the left.
+                  No sessions yet. Create a bot using the connection form above.
                 </CardContent>
               </Card>
             )}
           </div>
         </div>
       </div>
+    </div>
 
       <Dialog
         open={tutorialCompleted !== null}
