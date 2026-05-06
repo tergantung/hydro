@@ -178,7 +178,7 @@ pub(super) async fn automine_loop(
     // server confirming destruction (DB packet → foreground tile zeroed),
     // the tile is considered a dead-end and excluded from target search.
     // Increased to 15 to handle high-ping scenarios.
-    const MAX_TILE_ATTEMPTS: u32 = 15;
+    const MAX_TILE_ATTEMPTS: u32 = 12;
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
@@ -517,7 +517,7 @@ pub(super) async fn automine_loop(
                                         let is_pending = {
                                             let st = state.read().await;
                                             st.pending_hits.get(&(next_step.0, next_step.1))
-                                                .map(|last| last.elapsed() < Duration::from_millis(1500))
+                                                .map(|last| last.elapsed() < Duration::from_millis(900))
                                                 .unwrap_or(false)
                                         };
 
@@ -536,6 +536,13 @@ pub(super) async fn automine_loop(
 
                                         // Respect the DB (Destroy Block) packet: 
                                         // If the path is blocked, we STAY STILL and hit.
+                                        // SAFETY GUARD: Never hit the tile we are standing on.
+                                        if next_step.0 == player_x && next_step.1 == player_y {
+                                            _logger.warn("automine", Some(&_session_id), "STUCK: A* suggested hitting current tile. Skipping to prevent self-mine kick.");
+                                            continue;
+                                        }
+
+                                        _logger.info("automine", Some(&_session_id), format!("MINING: Clearing path tile ({}, {})", next_step.0, next_step.1));
                                         let pkts = protocol::make_mine_move_and_hit(
                                             player_x, player_y,
                                             player_x, player_y, // Do not move INTO the solid block
@@ -588,6 +595,13 @@ pub(super) async fn automine_loop(
                                                 }
                                                 record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
                                             } else {
+                                                // SAFETY GUARD: Never hit the tile we are standing on.
+                                                if target_x == player_x && target_y == player_y {
+                                                    _logger.warn("automine", Some(&_session_id), "STUCK: Target is player tile. Skipping.");
+                                                    continue;
+                                                }
+
+                                                _logger.info("automine", Some(&_session_id), format!("MINING: Stationary hit at ({}, {})", target_x, target_y));
                                                 let hit_pkts = protocol::make_mine_hit_stationary(
                                                     next_step.0, next_step.1,
                                                     target_x, target_y,
@@ -612,6 +626,13 @@ pub(super) async fn automine_loop(
                                         // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
                                         let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
 
+                                        // SAFETY GUARD: Never hit the tile we are standing on.
+                                        if target_x == player_x && target_y == player_y {
+                                            _logger.warn("automine", Some(&_session_id), "STUCK: Already on target tile. Skipping hit.");
+                                            continue;
+                                        }
+
+                                        _logger.info("automine", Some(&_session_id), format!("MINING: On-tile stationary hit at ({}, {})", target_x, target_y));
                                         let hit_pkts = protocol::make_mine_hit_stationary(
                                             player_x, player_y,
                                             target_x, target_y,
@@ -633,7 +654,7 @@ pub(super) async fn automine_loop(
 
                 if let Some((hx, hy)) = hit_this_tick {
                     let attempts = tile_attempts.entry((hx, hy)).or_insert(0);
-                    *attempts += 1;
+                    *attempts += 3; // We hit 3 times per burst
                     if *attempts == MAX_TILE_ATTEMPTS {
                         _logger.warn("automine", Some(_session_id),
                             format!("dead-end: tile ({},{}) did not break in {} retries", hx, hy, MAX_TILE_ATTEMPTS));
