@@ -3420,43 +3420,6 @@ async fn send_world_chat(
 
 /// Stamp the most recent bot action onto session state so the KErr handler can
 /// later say "you were just doing X when you got kicked".
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

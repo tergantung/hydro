@@ -32,6 +32,7 @@ use crate::protocol;
 use crate::world;
 
 use super::automine::{self, automine_loop};
+use super::autonether;
 use super::fishing::{fishing_loop, stop_fishing_game};
 use super::movement::{
     current_facing_direction, drop_target_tile, fallback_straight_line_path,
@@ -134,6 +135,7 @@ impl BotSession {
             collect_cooldowns: CollectCooldowns::default(),
             rate_limit_until: None,
             current_target: None,
+            autonether: autonether::AutonetherState::new(),
         }));
 
         let session = Arc::new(Self {
@@ -199,6 +201,20 @@ impl BotSession {
                 is_gem: c.is_gem,
             }).collect(),
         }
+    }
+
+    pub fn clone_arc(self: &Arc<Self>) -> Arc<Self> {
+        self.clone()
+    }
+
+    pub async fn queue_start_autonether(&self) -> Result<String, String> {
+        self.send_command(SessionCommand::StartAutonether).await?;
+        Ok("Nether automation starting...".to_string())
+    }
+
+    pub async fn queue_stop_autonether(&self) -> Result<String, String> {
+        self.send_command(SessionCommand::StopAutonether).await?;
+        Ok("Nether automation stopping...".to_string())
     }
 
     pub async fn connect(&self) -> Result<(), String> {
@@ -800,6 +816,7 @@ impl BotSession {
         let mut spam_stop_tx: Option<watch::Sender<bool>> = None;
         let mut fishing_stop_tx: Option<watch::Sender<bool>> = None;
         let mut automine_stop_tx: Option<watch::Sender<bool>> = None;
+        let mut autonether_stop_tx: Option<watch::Sender<bool>> = None;
 
         while let Some(event) = rx.recv().await {
             match event {
@@ -1128,6 +1145,31 @@ impl BotSession {
                     SessionCommand::StopAutomine => {
                         stop_background_worker(&mut automine_stop_tx);
                         self.state.write().await.current_target = None;
+                    }
+                    SessionCommand::StartAutonether => {
+                        stop_background_worker(&mut autonether_stop_tx);
+                        let Some(active) = &runtime else {
+                            self.set_error("connect the session before starting autonether".to_string()).await;
+                            continue;
+                        };
+                        let (stop_tx, stop_rx) = watch::channel(false);
+                        autonether_stop_tx = Some(stop_tx);
+                        let logger = self.logger.clone();
+                        let session_id = self.id.clone();
+                        let session = self.clone_arc();
+                        tokio::spawn(async move {
+                            if let Err(error) = autonether::autonether_loop(
+                                &session_id,
+                                &logger,
+                                session,
+                                stop_rx,
+                            ).await {
+                                logger.error("autonether", Some(&session_id), error);
+                            }
+                        });
+                    }
+                    SessionCommand::StopAutonether => {
+                        stop_background_worker(&mut autonether_stop_tx);
                     }
                     SessionCommand::DropItem {
                         block_id,

@@ -517,6 +517,7 @@ pub(super) struct SessionState {
     pub(super) awaiting_ready: bool,
     pub(super) tutorial_spawn_pod_confirmed: bool,
     pub(super) tutorial_automation_running: bool,
+    pub(super) autonether: super::autonether::AutonetherState,
     /// Tiles we've hit and are waiting for a DB (Destroy Block) confirmation.
     /// Maps (x, y) to the Instant of the LAST hit.
     pub(super) pending_hits: HashMap<(i32, i32), Instant>,
@@ -557,6 +558,8 @@ pub(super) enum SessionCommand {
         bait: String,
     },
     StopFishing,
+    StartAutonether,
+    StopAutonether,
     Talk {
         message: String,
     },

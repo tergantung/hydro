@@ -101,4 +101,15 @@ impl SessionManager {
             None => Ok(lua_runtime::idle_status()),
         }
     }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        // Stop any running lua script first
+        let _ = self.stop_lua_script(session_id).await;
+        // Remove the session from our active map
+        if self.sessions.remove(session_id).is_some() {
+            Ok(())
+        } else {
+            Err(format!("Session {} not found", session_id))
+        }
+    }
 }
