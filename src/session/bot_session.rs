@@ -217,6 +217,11 @@ impl BotSession {
         Ok("Nether automation stopping...".to_string())
     }
 
+    pub async fn autonether_status(&self) -> Result<Option<autonether::AutonetherStatusSnapshot>, String> {
+        let state = self.state.read().await;
+        Ok(Some(state.autonether.snapshot()))
+    }
+
     pub async fn connect(&self) -> Result<(), String> {
         self.send_command(SessionCommand::Connect).await
     }
