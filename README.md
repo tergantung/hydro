@@ -1,5 +1,5 @@
-![Alt text](stuff/hero.png "Patch-Me-Devs")
-<h1 align="center">Patch-Me-Devs</h1>
+![Alt text](stuff/hero.png "Hydro")
+<h1 align="center">Hydro</h1>
 
 <p align="center">An open source PixelWorlds bot — released so the devs finally have a reason to patch it.</p>
 
@@ -20,7 +20,7 @@ cd web
 bun install
 bun run build
 cd ..
-cargo run --bin Moonlight
+cargo run --bin Hydro
 ```
 
 Then open `http://127.0.0.1:3000`.
@@ -183,3 +183,4 @@ The server accepts these without checking the rate, tool tier, or time since the
 This is for educational and patch-reference purposes only. No AC bypass is included. Use it to understand the vulnerabilities — and if you're a dev, use it to fix them.
 
 Contributions are welcome. If you find something else worth patching, open a PR.
+# hydrapw
