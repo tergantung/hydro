@@ -134,7 +134,7 @@ mod tests {
 
     use super::{
         BotSession, FishingAutomationState, GrowingTileState, QueuePriority, SchedulerPhase,
-        SchedulerState, SendMode, SessionState, drop_target_tile,
+        SchedulerState, SendMode, SessionState, CollectCooldowns, drop_target_tile,
         apply_destroy_block_change, apply_foreground_block_change, is_tile_ready_to_harvest_at,
         update_player_position_from_message,
     };
@@ -202,6 +202,12 @@ mod tests {
             tutorial_phase4_acknowledged: false,
             fishing: FishingAutomationState::default(),
             ping_ms: None,
+            collect_cooldowns: CollectCooldowns::default(),
+            rate_limit_until: None,
+            current_target: None,
+            world_items: Vec::new(),
+            autonether: super::autonether::AutonetherState::new(),
+            automine_speed: 1.0,
         }
     }
 

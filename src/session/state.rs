@@ -462,13 +462,17 @@ pub(super) struct CollectCooldowns {
 }
 
 impl CollectCooldowns {
-    pub(super) const COOLDOWN: Duration = Duration::from_secs(3); // 3s per item minimum
+    pub(super) const COOLDOWN: Duration = Duration::from_secs(1); // 1s per item (reduced from 3s)
 
     pub(super) fn can_collect(&self, id: i32) -> bool {
         match self.cooldowns.get(&id) {
             Some(&last) => last.elapsed() >= Self::COOLDOWN,
             None => true,
         }
+    }
+
+    pub(super) fn is_on_cooldown(&self, id: i32) -> bool {
+        !self.can_collect(id)
     }
 
     pub(super) fn mark_collected(&mut self, id: i32) {
@@ -528,6 +532,10 @@ pub(super) struct SessionState {
     pub(super) rate_limit_until: Option<Instant>,
     pub(super) current_target: Option<BotTarget>,
     pub(super) world_items: Vec<crate::world::DecodedWorldItem>,
+    /// Automine speed multiplier. 1.0 = safe default (~350ms/tile),
+    /// lower values = slower (safer), higher values = faster (riskier).
+    /// Clamped to [0.4, 1.6] in the loop. Default: 1.0.
+    pub(super) automine_speed: f32,
 }
 
 #[derive(Debug)]
@@ -574,6 +582,7 @@ pub(super) enum SessionCommand {
     },
     StartAutomine,
     StopAutomine,
+    SetAutomineSpeed { multiplier: f32 },
 }
 
 #[derive(Debug)]

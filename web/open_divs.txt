@@ -1,0 +1,107 @@
+617:      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.2_0.1_260),oklch(0.05_0.01_240))] text-foreground selection:bg-primary/30">
+618:        <div className="mx-auto flex min-h-screen max-w-[640px] items-center px-4 py-10">
+633:                <div className="flex flex-col items-center gap-4 py-6">
+634:                  <div className="text-sm text-muted-foreground uppercase tracking-widest font-bold">Your 6-Digit Code</div>
+635:                  <div className="text-7xl font-black tracking-[0.2em] text-primary font-mono drop-shadow-[0_0_15px_rgba(var(--primary),0.5)]">
+638:                  <div className="text-xs text-muted-foreground mt-8 flex items-center gap-2">
+645:                  <div className="grid gap-2">
+656:                  <div className="flex flex-col gap-3">
+683:                <div
+727:    <div className="min-h-screen bg-[#0B0D0C] text-[#E7E4D8] selection:bg-primary/30 relative overflow-hidden">
+729:      <div className="absolute inset-0 opacity-20 pointer-events-none bg-[url('https://images.unsplash.com/photo-1578632738908-4521c626df46?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center blur-[100px] scale-110"></div>
+731:      <div className="flex h-screen relative z-10">
+733:        <div className="flex flex-col border-r border-[#262B29] bg-[#0D100F]/80 backdrop-blur-xl w-20 items-center py-6 gap-8">
+735:          <div className="group relative cursor-pointer">
+736:            <div className="size-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center glow-primary transition-all group-hover:scale-110">
+739:            <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-black/90 border border-white/10 text-xs font-bold opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all whitespace-nowrap z-[100]">
+755:              <div key={item.label} className="group relative">
+771:                <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-black/90 border border-white/10 text-xs font-bold opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all whitespace-nowrap z-[100]">
+779:          <div className="group relative">
+789:            <div className="absolute left-full ml-4 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-black/90 border border-white/10 text-xs font-bold opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all whitespace-nowrap z-[100]">
+796:        <div className="flex-1 flex flex-col min-w-0 bg-transparent overflow-hidden">
+798:            <div className="flex-1 flex overflow-hidden">
+800:              <div className="w-80 border-r border-[#262B29] bg-[#0D100F]/40 backdrop-blur-md flex flex-col">
+801:                <div className="p-6 border-b border-[#262B29]">
+812:                    <div className="mt-4 p-4 rounded-2xl bg-black/40 border border-white/5 space-y-4">
+813:                      <div className="space-y-3">
+814:                        <div>
+827:                        <div>
+829:                          <div className="flex gap-2">
+865:                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+866:                  <div className="text-[10px] font-black text-[#8D8A7E] uppercase tracking-[0.2em] px-2 mb-4 flex items-center justify-between">
+880:                      <div className={`size-2.5 rounded-full ${session.status === "Connected" ? "bg-[#6F8B57] shadow-[0_0_10px_#6F8B57]" : "bg-[#A13D3D] shadow-[0_0_10px_#A13D3D]"}`} />
+881:                      <div className="flex-1 text-left min-w-0">
+882:                        <div className="font-black text-[11px] truncate uppercase tracking-widest text-[#E7E4D8]">{session.id}</div>
+883:                        <div className="text-[9px] text-[#8D8A7E] font-bold uppercase tracking-tighter truncate mt-0.5">{session.status} • {session.username || "GUEST"}</div>
+891:              <div className="flex-1 overflow-y-auto p-8 relative">
+893:                <div className="mb-8 flex flex-col xl:flex-row xl:items-center justify-between gap-8 glass p-8 rounded-[2rem] border-glow relative overflow-hidden">
+894:                  <div className="absolute top-0 right-0 p-8 opacity-5 pointer-events-none">
+897:                  <div className="relative z-10">
+898:                    <div className="flex items-center gap-4 mb-3">
+899:                      <div className="size-3 rounded-full bg-[#6F8B57] shadow-[0_0_15px_#6F8B57] animate-pulse"></div>
+904:                    <div className="flex items-center gap-4">
+905:                      <div className="text-[10px] text-[#8D8A7E] font-black uppercase tracking-[0.3em] bg-black/40 px-3 py-1 rounded-lg border border-[#262B29]">
+908:                      <div className="text-[10px] text-[#8D8A7E] font-black uppercase tracking-[0.3em] bg-black/40 px-3 py-1 rounded-lg border border-[#262B29]">
+914:                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6 relative z-10">
+921:                      <div key={stat.label} className="bg-black/40 border border-[#262B29] rounded-2xl p-4 min-w-[120px] flex flex-col gap-2 shadow-inner">
+922:                        <div className="flex items-center gap-2 text-[8px] font-black text-[#8D8A7E] tracking-[0.2em] uppercase opacity-70">
+926:                        <div className={`text-xl font-black tracking-tighter ${stat.color || "text-[#E7E4D8]"}`}>{stat.value}</div>
+934:                  <div className="mb-8 p-4 rounded-2xl bg-[#A13D3D]/10 border border-[#A13D3D]/30 glow-error animate-in fade-in slide-in-from-top-4">
+935:                    <div className="flex items-center gap-3 text-[#A13D3D]">
+937:                      <div className="font-mono text-xs font-bold uppercase tracking-widest flex-1">
+940:                      <div className="text-[10px] font-black opacity-50 uppercase tracking-tighter">ERROR_CODE: 403_BANNED</div>
+946:                <div className="grid gap-8">
+957:                                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+958:                                  <div className="flex items-center gap-4">
+959:                                    <div className="p-3 rounded-2xl bg-primary/10 border border-primary/20 glow-primary">
+962:                                    <div>
+965:                                        <div className={`size-2 rounded-full ${session.status === "Connected" ? "bg-[#6F8B57] shadow-[0_0_8px_#6F8B57]" : "bg-[#A13D3D] shadow-[0_0_8px_#A13D3D]"}`} />
+973:                              <div className="flex items-center gap-2">
+1016:                                <div className="grid md:grid-cols-3 gap-4">
+1017:                                  <div className="p-4 rounded-2xl bg-black/40 border border-[#262B29]">
+1018:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">POS_VECTOR_MAP</div>
+1019:                                    <div className="text-lg font-black text-[#E7E4D8] tracking-tighter">
+1023:                                  <div className="p-4 rounded-2xl bg-black/40 border border-[#262B29]">
+1024:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">WORLD_DOMAIN</div>
+1025:                                    <div className="text-lg font-black text-primary tracking-tighter uppercase">
+1029:                                  <div className="p-4 rounded-2xl bg-black/40 border border-[#262B29]">
+1030:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">PING_LATENCY</div>
+1031:                                    <div className="text-lg font-black text-[#6F8B57] tracking-tighter">
+1040:                                <div className="p-6 rounded-[2rem] bg-black/40 border border-[#262B29] space-y-4">
+1041:                                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-primary">
+1045:                                  <div className="flex gap-3">
+1059:                                  <div className="flex gap-3">
+1068:                                <div className="grid md:grid-cols-2 gap-4">
+1069:                                  <div className="p-6 rounded-[2rem] bg-black/40 border border-[#262B29] space-y-4">
+1070:                                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#C2B66A]">
+1074:                                    <div className="grid grid-cols-2 gap-3">
+1079:                                  <div className="p-6 rounded-[2rem] bg-black/40 border border-[#262B29] space-y-4 opacity-50 relative overflow-hidden">
+1080:                                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10">
+1081:                                      <div className="text-[10px] font-black uppercase tracking-[0.5em] text-[#A13D3D]">SYSTEM_MAINTENANCE</div>
+1083:                                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#8D8A7E]">
+1087:                                    <div className="flex gap-3">
+1100:                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+1105:                                      <div key={`${session.id}-${item.block_id}`} className="group relative p-3 rounded-2xl bg-black/40 border border-[#262B29] hover:border-primary/40 transition-all text-center">
+1107:                                        <div className="text-[10px] font-black text-[#E7E4D8] truncate uppercase tracking-tighter mb-1">{label}</div>
+1108:                                        <div className="text-sm font-black text-primary">x{item.amount}</div>
+1110:                                          <div className="mt-2 grid grid-cols-2 gap-1">
+1119:                                    <div className="col-span-full py-12 text-center text-[10px] font-black uppercase tracking-[0.4em] text-[#8D8A7E]">STORAGE_EMPTY</div>
+1126:                                <div className="grid md:grid-cols-[1fr_300px] gap-6">
+1127:                                  <div className="p-6 rounded-[2rem] bg-black/40 border border-[#262B29] space-y-4">
+1128:                                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-primary">
+1132:                                    <div className="flex gap-3">
+1142:                                  <div className="p-6 rounded-[2rem] bg-black/40 border border-[#262B29] space-y-4">
+1143:                                    <div className="text-[10px] font-black uppercase tracking-widest text-[#8D8A7E]">SPAM_MODULE</div>
+1158:                    <div className="h-[60vh] flex flex-col items-center justify-center text-center">
+1159:                <div className="size-24 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center glow-primary mb-6 animate-pulse">
+1169:        <div className="flex flex-col h-full bg-black/40 p-6">
+1170:          <div className="flex items-center justify-between mb-4 pb-4 border-b border-white/10">
+1171:            <div className="flex items-center gap-3">
+1173:              <div>
+1184:            <div className="flex-1 flex flex-col gap-4">
+1193:              <div className="flex flex-wrap items-center gap-2">
+1216:                <div className="ml-auto text-xs font-mono px-3 py-1.5 rounded-lg border border-white/10 bg-white/5">
+1224:            <div className="flex-1 flex items-center justify-center">
+1228:                  <div className="text-sm text-muted-foreground">
+1263:          <div className="grid gap-3 py-4">
+1273:            <div className="h-px bg-white/10 my-2" />

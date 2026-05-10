@@ -1,0 +1,28 @@
+name: Build Windows Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build Release
+      run: cargo build --release
+
+    - name: Upload Binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: Hydro-Windows-Beta
+        path: |
+          target/release/Hydro.exe
+          target/release/updater.exe
+          block_types.json

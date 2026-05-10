@@ -58,7 +58,19 @@ pub struct AppState {
     pub event_hub: Arc<EventHub>,
     pub dashboard_auth: DashboardAuthManager,
     pub movement_cooldowns: Arc<RwLock<HashMap<String, MovementCooldownState>>>,
+    pub maintenance: Arc<RwLock<Option<RemoteConfig>>>,
 }
+
+#[derive(Clone, serde::Serialize, serde::Deserialize, Debug)]
+pub struct RemoteConfig {
+    pub maintenance: bool,
+    pub maintenance_message: String,
+    pub latest_version: String,
+    pub download_url: String,
+}
+
+const APP_VERSION: &str = "0.1.0-beta";
+const CONFIG_URL: &str = "https://gist.githubusercontent.com/user/gist_id/raw/config.json"; // GANTI DENGAN URL ASLI NANTI
 
 impl AppState {
     pub fn new(
@@ -67,12 +79,29 @@ impl AppState {
         event_hub: Arc<EventHub>,
         dashboard_auth: DashboardAuthManager,
     ) -> Self {
+        let maintenance = Arc::new(RwLock::new(None));
+        
+        // Background check maintenance
+        let m_cloned = maintenance.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(mut resp) = ureq::get(CONFIG_URL).call() {
+                    if let Ok(config) = resp.body_mut().read_json::<RemoteConfig>() {
+                        let mut lock = m_cloned.write().await;
+                        *lock = Some(config);
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(300)).await;
+            }
+        });
+
         Self {
             session_manager,
             logger,
             event_hub,
             dashboard_auth,
             movement_cooldowns: Arc::new(RwLock::new(HashMap::new())),
+            maintenance,
         }
     }
 }
@@ -84,10 +113,12 @@ pub fn router(state: AppState) -> Router {
     let block_types_file = project_root.join("block_types.json");
 
     Router::new()
+        .route("/api/status", get(get_app_status))
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/register", post(auth_register))
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
+        .route("/api/save-code", post(save_code))
         .route("/api/connect", post(connect_with_auth))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", get(get_session))
@@ -112,6 +143,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/spam/stop", post(stop_spam))
         .route("/api/sessions/{id}/automine/start", post(start_automine))
         .route("/api/sessions/{id}/automine/stop", post(stop_automine))
+        .route("/api/sessions/{id}/automine/speed", post(set_automine_speed))
         .route("/api/sessions/{id}/autonether/start", post(start_autonether))
         .route("/api/sessions/{id}/autonether/stop", post(stop_autonether))
         .route("/api/sessions/{id}/autonether/status", get(get_autonether_status))
@@ -297,6 +329,27 @@ async fn auth_logout(
     Ok(Json(json!({
         "ok": true,
         "message": "logged out",
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct SaveCodeRequest {
+    code: String,
+}
+
+async fn save_code(
+    Json(request): Json<SaveCodeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use std::fs;
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let code_file = project_root.join("code.txt");
+    
+    fs::write(&code_file, &request.code)
+        .map_err(|e| ApiError::bad_request(format!("failed to save code: {}", e)))?;
+    
+    Ok(Json(json!({
+        "ok": true,
+        "message": "code saved to code.txt",
     })))
 }
 
@@ -740,6 +793,30 @@ async fn stop_automine(
     })))
 }
 
+#[derive(serde::Deserialize)]
+struct AutomineSpeedRequest {
+    multiplier: f32,
+}
+
+async fn set_automine_speed(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<AutomineSpeedRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let message = session
+        .queue_set_automine_speed(request.multiplier)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "result": ApiMessage { ok: true, message },
+    })))
+}
+
 async fn start_autonether(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -890,4 +967,13 @@ impl IntoResponse for ApiError {
         )
             .into_response()
     }
+}
+async fn get_app_status(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.maintenance.read().await;
+    Ok(Json(json!({
+        "version": APP_VERSION,
+        "config": *config
+    })))
 }

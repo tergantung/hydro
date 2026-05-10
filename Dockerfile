@@ -41,13 +41,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-ENV MOONLIGHT_DATA_DIR=/app/data
+ENV HYDRO_DATA_DIR=/app/data
 RUN mkdir -p /app/data
 
-COPY --from=builder /app/target/release/Moonlight ./Moonlight
+COPY --from=builder /app/target/release/Hydro ./Hydro
 COPY --from=web-builder /app/dist ./dist
 COPY block_types.json ./block_types.json
 
 EXPOSE 3000
 
-CMD ["./Moonlight"]
+CMD ["./Hydro"]

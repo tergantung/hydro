@@ -136,6 +136,7 @@ impl BotSession {
             rate_limit_until: None,
             current_target: None,
             autonether: autonether::AutonetherState::new(),
+            automine_speed: 1.0,
         }));
 
         let session = Arc::new(Self {
@@ -421,6 +422,12 @@ impl BotSession {
         Ok("automine stop queued".to_string())
     }
 
+    pub async fn queue_set_automine_speed(&self, multiplier: f32) -> Result<String, String> {
+        let clamped = multiplier.clamp(0.4, 1.6);
+        self.send_command(SessionCommand::SetAutomineSpeed { multiplier: clamped }).await?;
+        Ok(format!("automine speed set to {clamped:.2}x"))
+    }
+
     pub(crate) async fn walk(
         &self,
         offset_x: i32,
@@ -675,6 +682,16 @@ impl BotSession {
                     .filter(|entry| entry.block_id == block_id)
             .map(|entry| entry.amount as u32)
             .sum()
+    }
+
+    pub(crate) async fn inventory(&self) -> Vec<(u16, u32)> {
+        self.state
+            .read()
+            .await
+            .inventory
+            .iter()
+            .map(|entry| (entry.block_id, entry.amount as u32))
+            .collect()
     }
 
     pub(crate) async fn collectables(&self) -> Vec<LuaCollectableSnapshot> {
@@ -1135,6 +1152,7 @@ impl BotSession {
                         let state = self.state.clone();
                         let logger = self.logger.clone();
                         let session_id = self.id.clone();
+                        let controller_tx = self.controller_tx.clone();
                         tokio::spawn(async move {
                             if let Err(error) = automine::automine_loop(
                                 &session_id,
@@ -1142,6 +1160,7 @@ impl BotSession {
                                 &state,
                                 &outbound_tx,
                                 stop_rx,
+                                controller_tx,
                             ).await {
                                 logger.error("automine", Some(&session_id), error);
                             }
@@ -1150,6 +1169,11 @@ impl BotSession {
                     SessionCommand::StopAutomine => {
                         stop_background_worker(&mut automine_stop_tx);
                         self.state.write().await.current_target = None;
+                    }
+                    SessionCommand::SetAutomineSpeed { multiplier } => {
+                        let clamped = multiplier.clamp(0.4, 1.6);
+                        self.state.write().await.automine_speed = clamped;
+                        self.logger.info("automine", Some(&self.id), format!("speed multiplier updated to {clamped:.2}x"));
                     }
                     SessionCommand::StartAutonether => {
                         stop_background_worker(&mut autonether_stop_tx);

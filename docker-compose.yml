@@ -1,13 +1,13 @@
 services:
-  moonlight:
+  hydro:
     build: .
     ports:
       - "3000:3000"
     restart: unless-stopped
     volumes:
-      - moonlight-data:/app/data
+      - hydro-data:/app/data
     environment:
-      - MOONLIGHT_TRACE=0
+      - HYDRO_TRACE=0
     logging:
       driver: json-file
       options:
@@ -15,4 +15,4 @@ services:
         max-file: "3"
 
 volumes:
-  moonlight-data:
+  hydro-data:

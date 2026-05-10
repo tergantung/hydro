@@ -30,7 +30,7 @@ type LuaStatusResponse = {
   status?: LuaScriptStatusSnapshot | null
 }
 
-const AUTH_TOKEN_KEY = "moonlight_dashboard_token"
+const AUTH_TOKEN_KEY = "hydro_dashboard_token"
 
 export function getAuthToken() {
   if (typeof window === "undefined") {
@@ -210,6 +210,13 @@ export function startAutomine(sessionId: string) {
 export function stopAutomine(sessionId: string) {
   return request<ActionResponse>(`/api/sessions/${sessionId}/automine/stop`, {
     method: "POST",
+  })
+}
+
+export function setAutomineSpeed(sessionId: string, multiplier: number) {
+  return request<ActionResponse>(`/api/sessions/${sessionId}/automine/speed`, {
+    method: "POST",
+    body: JSON.stringify({ multiplier }),
   })
 }
 

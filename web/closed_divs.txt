@@ -1,0 +1,103 @@
+634:                  <div className="text-sm text-muted-foreground uppercase tracking-widest font-bold">Your 6-Digit Code</div>
+637:                  </div>
+641:                  </div>
+642:                </div>
+655:                  </div>
+679:                  </div>
+691:                </div>
+695:        </div>
+696:      </div>
+729:      <div className="absolute inset-0 opacity-20 pointer-events-none bg-[url('https://images.unsplash.com/photo-1578632738908-4521c626df46?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center blur-[100px] scale-110"></div>
+738:            </div>
+741:            </div>
+742:          </div>
+773:                </div>
+774:              </div>
+791:            </div>
+792:          </div>
+793:        </div>
+826:                        </div>
+844:                          </div>
+845:                        </div>
+860:                      </div>
+861:                    </div>
+863:                </div>
+869:                  </div>
+882:                        <div className="font-black text-[11px] truncate uppercase tracking-widest text-[#E7E4D8]">{session.id}</div>
+883:                        <div className="text-[9px] text-[#8D8A7E] font-bold uppercase tracking-tighter truncate mt-0.5">{session.status} • {session.username || "GUEST"}</div>
+884:                      </div>
+887:                </div>
+888:              </div>
+896:                  </div>
+899:                      <div className="size-3 rounded-full bg-[#6F8B57] shadow-[0_0_15px_#6F8B57] animate-pulse"></div>
+903:                    </div>
+907:                      </div>
+910:                      </div>
+911:                    </div>
+912:                  </div>
+925:                        </div>
+926:                        <div className={`text-xl font-black tracking-tighter ${stat.color || "text-[#E7E4D8]"}`}>{stat.value}</div>
+927:                      </div>
+929:                  </div>
+930:                </div>
+939:                      </div>
+940:                      <div className="text-[10px] font-black opacity-50 uppercase tracking-tighter">ERROR_CODE: 403_BANNED</div>
+941:                    </div>
+942:                  </div>
+961:                                    </div>
+970:                                    </div>
+971:                                  </div>
+990:                              </div>
+991:                            </div>
+1018:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">POS_VECTOR_MAP</div>
+1021:                                    </div>
+1022:                                  </div>
+1024:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">WORLD_DOMAIN</div>
+1027:                                    </div>
+1028:                                  </div>
+1030:                                    <div className="text-[8px] font-black text-[#8D8A7E] uppercase tracking-widest mb-2">PING_LATENCY</div>
+1033:                                    </div>
+1034:                                  </div>
+1035:                                </div>
+1044:                                  </div>
+1058:                                  </div>
+1062:                                  </div>
+1063:                                </div>
+1073:                                    </div>
+1077:                                    </div>
+1078:                                  </div>
+1081:                                      <div className="text-[10px] font-black uppercase tracking-[0.5em] text-[#A13D3D]">SYSTEM_MAINTENANCE</div>
+1082:                                    </div>
+1086:                                    </div>
+1089:                                    </div>
+1090:                                  </div>
+1091:                                </div>
+1107:                                        <div className="text-[10px] font-black text-[#E7E4D8] truncate uppercase tracking-tighter mb-1">{label}</div>
+1108:                                        <div className="text-sm font-black text-primary">x{item.amount}</div>
+1113:                                          </div>
+1115:                                      </div>
+1119:                                    <div className="col-span-full py-12 text-center text-[10px] font-black uppercase tracking-[0.4em] text-[#8D8A7E]">STORAGE_EMPTY</div>
+1121:                                </div>
+1131:                                    </div>
+1140:                                    </div>
+1141:                                  </div>
+1143:                                    <div className="text-[10px] font-black uppercase tracking-widest text-[#8D8A7E]">SPAM_MODULE</div>
+1147:                                  </div>
+1148:                                </div>
+1161:                </div>
+1164:              </div>
+1166:          </div>
+1167:        </div>
+1176:              </div>
+1177:            </div>
+1181:          </div>
+1220:                </div>
+1221:              </div>
+1222:            </div>
+1230:                  </div>
+1233:            </div>
+1235:        </div>
+1237:        </div>
+1238:      </div>
+1286:          </div>
+1289:    </div>

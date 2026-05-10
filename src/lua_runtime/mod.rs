@@ -347,6 +347,328 @@ fn build_bot_table(
         })?
     })?;
 
+    // Additional utility functions
+    bot.set("log", {
+        lua.create_function(move |_lua, (_self, message): (Value, String)| {
+            println!("[LUA LOG] {}", message);
+            Ok(())
+        })?
+    })?;
+
+    bot.set("getDistance", {
+        lua.create_function(move |_lua, (_self, x1, y1, x2, y2): (Value, i32, i32, i32, i32)| {
+            let dx = (x2 - x1) as f64;
+            let dy = (y2 - y1) as f64;
+            Ok((dx * dx + dy * dy).sqrt())
+        })?
+    })?;
+
+    bot.set("getManhattanDistance", {
+        lua.create_function(move |_lua, (_self, x1, y1, x2, y2): (Value, i32, i32, i32, i32)| {
+            Ok((x2 - x1).abs() + (y2 - y1).abs())
+        })?
+    })?;
+
+    bot.set("isInRange", {
+        lua.create_function(move |_lua, (_self, x1, y1, x2, y2, range): (Value, i32, i32, i32, i32, i32)| {
+            let dx = (x2 - x1).abs();
+            let dy = (y2 - y1).abs();
+            Ok(dx <= range && dy <= range)
+        })?
+    })?;
+
+    bot.set("getInventory", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |lua, (_self,): (Value,)| {
+            let inventory = runtime.block_on(session.inventory());
+            let table = lua.create_table()?;
+            for (index, (block_id, count)) in inventory.iter().enumerate() {
+                let item = lua.create_table()?;
+                item.set("block_id", *block_id)?;
+                item.set("count", *count)?;
+                table.set(index + 1, item)?;
+            }
+            Ok(table)
+        })?
+    })?;
+
+    bot.set("hasItem", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, block_id, min_count): (Value, u16, Option<u32>)| {
+            let count = runtime.block_on(session.inventory_count(block_id));
+            let required = min_count.unwrap_or(1);
+            Ok(count >= required)
+        })?
+    })?;
+
+    bot.set("getTileAt", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |lua, (_self, x, y): (Value, i32, i32)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            world_tile_table(lua, &world, x, y)
+        })?
+    })?;
+
+    bot.set("isSolid", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, x, y): (Value, i32, i32)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let tile = world_tile(&world, x, y).map_err(LuaError::external)?;
+            Ok(tile.foreground != 0)
+        })?
+    })?;
+
+    bot.set("isEmpty", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, x, y): (Value, i32, i32)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let tile = world_tile(&world, x, y).map_err(LuaError::external)?;
+            Ok(tile.foreground == 0)
+        })?
+    })?;
+
+    bot.set("findBlock", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |lua, (_self, block_id, max_distance): (Value, u16, Option<i32>)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let position = runtime.block_on(session.position());
+            let max_dist = max_distance.unwrap_or(50);
+            
+            let px = position.world_x.unwrap_or(0.0) as i32;
+            let py = position.world_y.unwrap_or(0.0) as i32;
+            
+            let mut closest: Option<(i32, i32, f64)> = None;
+            
+            for y in 0..world.height as i32 {
+                for x in 0..world.width as i32 {
+                    let index = y as usize * world.width as usize + x as usize;
+                    if let Some(&fg) = world.tiles.foreground.get(index) {
+                        if fg == block_id {
+                            let dx = (x - px) as f64;
+                            let dy = (y - py) as f64;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            
+                            if dist <= max_dist as f64 {
+                                if let Some((_, _, current_dist)) = closest {
+                                    if dist < current_dist {
+                                        closest = Some((x, y, dist));
+                                    }
+                                } else {
+                                    closest = Some((x, y, dist));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if let Some((x, y, _)) = closest {
+                let result = lua.create_table()?;
+                result.set("x", x)?;
+                result.set("y", y)?;
+                Ok(Value::Table(result))
+            } else {
+                Ok(Value::Nil)
+            }
+        })?
+    })?;
+
+    bot.set("findNearestCollectable", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |lua, (_self,): (Value,)| {
+            let collectables = runtime.block_on(session.collectables());
+            let position = runtime.block_on(session.position());
+            
+            let px = position.world_x.unwrap_or(0.0);
+            let py = position.world_y.unwrap_or(0.0);
+            
+            let mut closest: Option<(&LuaCollectableSnapshot, f64)> = None;
+            
+            for item in &collectables {
+                let dx = item.pos_x - px;
+                let dy = item.pos_y - py;
+                let dist = (dx * dx + dy * dy).sqrt();
+                
+                if let Some((_, current_dist)) = closest {
+                    if dist < current_dist {
+                        closest = Some((item, dist));
+                    }
+                } else {
+                    closest = Some((item, dist));
+                }
+            }
+            
+            if let Some((item, _)) = closest {
+                let result = lua.create_table()?;
+                result.set("id", item.id)?;
+                result.set("block_type", item.block_type)?;
+                result.set("amount", item.amount)?;
+                result.set("pos_x", item.pos_x)?;
+                result.set("pos_y", item.pos_y)?;
+                result.set("is_gem", item.is_gem)?;
+                Ok(Value::Table(result))
+            } else {
+                Ok(Value::Nil)
+            }
+        })?
+    })?;
+
+    bot.set("countBlocks", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, block_id): (Value, u16)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let count = world.tiles.foreground.iter().filter(|&&id| id == block_id).count();
+            Ok(count)
+        })?
+    })?;
+
+    bot.set("getWorldSize", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |lua, (_self,): (Value,)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let result = lua.create_table()?;
+            result.set("width", world.width)?;
+            result.set("height", world.height)?;
+            Ok(result)
+        })?
+    })?;
+
+    bot.set("isNearSpawn", {
+        let session = session.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, range): (Value, i32)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let position = runtime.block_on(session.position());
+            
+            let px = position.world_x.unwrap_or(0.0) as i32;
+            let py = position.world_y.unwrap_or(0.0) as i32;
+            let sx = world.spawn.world_x.unwrap_or(0.0) as i32;
+            let sy = world.spawn.world_y.unwrap_or(0.0) as i32;
+            
+            let dx = (px - sx).abs();
+            let dy = (py - sy).abs();
+            
+            Ok(dx <= range && dy <= range)
+        })?
+    })?;
+
+    bot.set("walkToSpawn", {
+        let session = session.clone();
+        let cancel = cancel.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self,): (Value,)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let sx = world.spawn.world_x.ok_or_else(|| LuaError::external("spawn x not available"))? as i32;
+            let sy = world.spawn.world_y.ok_or_else(|| LuaError::external("spawn y not available"))? as i32;
+            runtime.block_on(session.walk_to(sx, sy, &cancel)).map_err(LuaError::external)
+        })?
+    })?;
+
+    bot.set("punchAt", {
+        let session = session.clone();
+        let cancel = cancel.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, x, y): (Value, i32, i32)| {
+            let position = runtime.block_on(session.position());
+            let px = position.world_x.unwrap_or(0.0) as i32;
+            let py = position.world_y.unwrap_or(0.0) as i32;
+            let dx = x - px;
+            let dy = y - py;
+            runtime.block_on(session.punch(dx, dy, &cancel)).map_err(LuaError::external)
+        })?
+    })?;
+
+    bot.set("placeAt", {
+        let session = session.clone();
+        let cancel = cancel.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, x, y, block_id): (Value, i32, i32, i32)| {
+            let position = runtime.block_on(session.position());
+            let px = position.world_x.unwrap_or(0.0) as i32;
+            let py = position.world_y.unwrap_or(0.0) as i32;
+            let dx = x - px;
+            let dy = y - py;
+            runtime.block_on(session.place(dx, dy, block_id, &cancel)).map_err(LuaError::external)
+        })?
+    })?;
+
+    bot.set("harvestAll", {
+        let session = session.clone();
+        let cancel = cancel.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self,): (Value,)| {
+            let world = runtime.block_on(session.world()).map_err(LuaError::external)?;
+            let now_ticks = crate::protocol::csharp_ticks();
+            
+            for tile in &world.objects.growing_tiles {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(LuaError::external("script stopped"));
+                }
+                
+                if now_ticks >= tile.growth_end_time {
+                    let _ = runtime.block_on(session.walk_to(tile.x, tile.y, &cancel));
+                    let position = runtime.block_on(session.position());
+                    let px = position.world_x.unwrap_or(0.0) as i32;
+                    let py = position.world_y.unwrap_or(0.0) as i32;
+                    let dx = tile.x - px;
+                    let dy = tile.y - py;
+                    let _ = runtime.block_on(session.punch(dx, dy, &cancel));
+                }
+            }
+            Ok(())
+        })?
+    })?;
+
+    bot.set("repeat", {
+        let cancel = cancel.clone();
+        lua.create_function(move |_lua, (_self, times, func): (Value, i32, mlua::Function)| {
+            for _ in 0..times {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(LuaError::external("script stopped"));
+                }
+                func.call::<()>(())?;
+            }
+            Ok(())
+        })?
+    })?;
+
+    bot.set("waitUntil", {
+        let cancel = cancel.clone();
+        let runtime = runtime.clone();
+        lua.create_function(move |_lua, (_self, condition, timeout_ms): (Value, mlua::Function, Option<i64>)| {
+            let timeout = timeout_ms.unwrap_or(30000);
+            let start = std::time::Instant::now();
+            
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(LuaError::external("script stopped"));
+                }
+                
+                let result: bool = condition.call(())?;
+                if result {
+                    return Ok(true);
+                }
+                
+                if start.elapsed().as_millis() > timeout as u128 {
+                    return Ok(false);
+                }
+                
+                runtime.block_on(async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                });
+            }
+        })?
+    })?;
+
     Ok(bot)
 }
 

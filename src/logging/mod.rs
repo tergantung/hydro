@@ -9,7 +9,7 @@ static TRACE_FORCED: OnceLock<bool> = OnceLock::new();
 
 fn trace_forced() -> bool {
     *TRACE_FORCED.get_or_init(|| {
-        std::env::var("MOONLIGHT_TRACE")
+        std::env::var("HYDRO_TRACE")
             .map(|value| !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false"))
             .unwrap_or(false)
     })

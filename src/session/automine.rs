@@ -6,19 +6,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use rand::RngExt;
 
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{mpsc, watch, RwLock};
 
 use crate::constants::movement;
 use crate::logging::Logger;
 use crate::models::{BotTarget, SessionStatus};
 use crate::protocol;
+use crate::session::ControllerEvent;
 
 use super::network::{send_doc, send_docs, send_docs_exclusive};
 use super::publish_state_snapshot;
 use super::state::{InventoryEntry, OutboundHandle, SessionState};
-
-// `record_action` writes through to mod.rs's tile-attempt tracker; tile
-// helpers stay in mod.rs until Task 8.
 
 /// Is this a mineable gemstone block?
 pub fn is_minegem(block_id: u16) -> bool {
@@ -28,8 +26,6 @@ pub fn is_minegem(block_id: u16) -> bool {
 
 /// Pick the best target — collectible or gemstone — within a 60-tile radius
 /// of the player. Targets near AI enemies are skipped.
-///
-/// Returns `None` when no eligible target exists in range.
 pub fn find_best_bot_target(
     player_map_x: i32,
     player_map_y: i32,
@@ -166,39 +162,37 @@ pub(super) async fn automine_loop(
     state: &Arc<RwLock<SessionState>>,
     outbound_tx: &OutboundHandle,
     mut stop_rx: watch::Receiver<bool>,
+    _controller_tx: mpsc::Sender<ControllerEvent>,
 ) -> Result<(), String> {
-    // We now use dynamic sleep instead of a fixed interval to handle ping jitter.
     let mut last_tick = Instant::now();
-
-    // Equip a pickaxe once per session and re-equip after losing it. Without
-    // a pickaxe in hand the server ignores all HB packets — verified via Seraph
-    // capture which logs "pickaxe 0x0ff8 equipped" before any mining attempt.
     let mut equipped_pickaxe: Option<u16> = None;
 
-    // Per-tile HB attempt counter. After MAX_TILE_ATTEMPTS hits without the
-    // server confirming destruction (DB packet → foreground tile zeroed),
-    // the tile is considered a dead-end and excluded from target search.
-    // Increased to 15 to handle high-ping scenarios.
     const MAX_TILE_ATTEMPTS: u32 = 12;
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
 
     loop {
-        let ping = { state.read().await.ping_ms.unwrap_or(0) };
-        let base_delay = 850;
+        let (ping, speed_mult) = {
+            let st = state.read().await;
+            (st.ping_ms.unwrap_or(0), st.automine_speed.clamp(0.4, 1.6))
+        };
+
+        // Anti-speed-hack timing with speed multiplier
+        // Base delay scale is shifted to match the user's preferred 850ms baseline
+        let base_delay = (850.0 / speed_mult) as u64;
         let dynamic_delay = {
             let mut rng = rand::rng();
-            let jitter = rng.random_range(0..350);
-            let thinking_pause = if rng.random_bool(0.05) { 500 } else { 0 };
+            let jitter = rng.random_range(0..(350.0 / speed_mult) as u64);
+            let thinking_pause = if rng.random_bool(0.05) { (500.0 / speed_mult) as u64 } else { 0 };
 
             if ping > 150 {
-                base_delay + (ping - 100) + jitter + thinking_pause
+                base_delay + (ping as u64 - 100) + jitter + thinking_pause
             } else {
                 base_delay + jitter + thinking_pause
             }
         };
-        let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay as u64))
+        let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay))
             .saturating_duration_since(Instant::now());
 
         tokio::select! {
@@ -234,12 +228,10 @@ pub(super) async fn automine_loop(
                     }
                 };
 
-                // Stop if session was explicitly stopped or errored
                 if matches!(session_status, SessionStatus::Idle | SessionStatus::Disconnected | SessionStatus::Error) {
                     return Ok(());
                 }
 
-                // If currently transitioning connections (e.g. Redirecting to mine), just wait
                 if matches!(session_status, SessionStatus::Connecting | SessionStatus::Authenticating | SessionStatus::Redirecting) {
                     continue;
                 }
@@ -255,7 +247,6 @@ pub(super) async fn automine_loop(
                         st.pending_world_is_instance = true;
                     }
 
-                    // Send wlA and TTjW in the exact same batch just like a normal JoinWorld command!
                     let _ = send_docs(
                         outbound_tx,
                         vec![
@@ -264,23 +255,18 @@ pub(super) async fn automine_loop(
                         ],
                     ).await;
                     
-                    // Wait for world transition
                     tokio::time::sleep(Duration::from_secs(4)).await;
                     continue;
                 }
 
                 if world_width == 0 {
-                    // World data not loaded yet, send a movement packet to stay alive
                     if is_in_mine {
-
                         let move_pkts = protocol::make_move_to_map_point(player_x, player_y, player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                     }
                     continue;
                 }
 
-                // Equip the best available pickaxe before any HB attempts. The server
-                // silently drops mining packets from a player without one in hand.
                 if equipped_pickaxe.is_none() {
                     if let Some(pickaxe_id) = find_best_pickaxe(&inventory) {
                         let _ = send_doc(outbound_tx, protocol::make_wear_item(pickaxe_id as i32)).await;
@@ -291,15 +277,12 @@ pub(super) async fn automine_loop(
                     }
                 }
 
-                // Reset attempt counters and pickaxe state when entering a new world.
                 if current_world_name != current_world {
                     tile_attempts.clear();
                     equipped_pickaxe = None;
                     current_world_name = current_world.clone();
                 }
 
-                // Drop attempt entries for tiles the server has confirmed destroyed
-                // (foreground tile is now 0). Those positions are walkable now.
                 tile_attempts.retain(|&(x, y), _| {
                     if x < 0 || y < 0 || (x as u32) >= world_width || (y as u32) >= world_height {
                         return false;
@@ -308,9 +291,6 @@ pub(super) async fn automine_loop(
                     foreground.get(idx).copied().unwrap_or(0) != 0
                 });
 
-                // Build a masked view of the foreground where dead-end tiles are
-                // replaced with bedrock (3993 — astar's get_tile_cost returns None,
-                // making it both unreachable AND not a target candidate).
                 let mut masked_foreground = foreground.clone();
                 for (&(x, y), &attempts) in &tile_attempts {
                     if attempts >= MAX_TILE_ATTEMPTS
@@ -327,20 +307,10 @@ pub(super) async fn automine_loop(
                 for (ex, ey) in &all_enemies {
                     let idx = (*ey as u32 * world_width + *ex as u32) as usize;
                     if let Some(t) = masked_foreground.get_mut(idx) {
-                        // Mark AI tiles as obsidian (non-destructible dead-end) for pathfinding
                         *t = 3993;
                     }
                 }
-                // Godmode-by-omission: damage is fully client-side (verified via packet capture —
-                // taking damage emits only a [PPA] audio packet, never a damage packet to the
-                // server). An external bot that never simulates self-damage is implicitly invincible,
-                // so we no longer wear damage/fighting potions.
 
-                // Combat Stance: Single-target priority combat (matches MineBot.cs logic)
-                // Select only the single closest enemy to avoid "Machine Gun" kicks.
-                // Distance is computed via i64 widening so a corrupted enemy entry
-                // with massive negative coords can't wrap into a tiny i32 and slip
-                // past the `dist <= 2` gate.
                 let mut closest_enemy: Option<(i32, i32, i32)> = None;
                 let mut min_dist: i64 = 999;
 
@@ -353,7 +323,6 @@ pub(super) async fn automine_loop(
                         let dx = (e.map_x as i64) - (player_x as i64);
                         let dy = (e.map_y as i64) - (player_y as i64);
                         let dist = dx.abs() + dy.abs();
-                        // Maximum valid melee reach is 2 blocks.
                         if dist <= 2 && dist < min_dist {
                             min_dist = dist;
                             closest_enemy = Some((e.map_x, e.map_y, e.ai_id));
@@ -367,17 +336,8 @@ pub(super) async fn automine_loop(
                     record_action(state, format!("HAI ai_id={ai_id} at=({ex},{ey})")).await;
                 }
 
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // AUTO-COLLECT: spam `C` for every dropped collectable within
-                // magnet range (~4 world-tiles). The server validates proximity
-                // and quietly drops collect requests for items too far away, so
-                // there's no penalty for asking. This catches nuggets/coins/gems
-                // that scattered around when we mined adjacent blocks — the old
-                // path-walking-to-drop logic was missing them because we'd already
-                // moved on by the time the path completed.
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 {
-                    const COLLECT_RADIUS: i32 = 2; // map tiles
+                    const COLLECT_RADIUS: i32 = 2; 
                     let to_collect: Vec<i32> = {
                         let st = state.read().await;
                         st.collectables
@@ -386,7 +346,6 @@ pub(super) async fn automine_loop(
                                 if !st.collect_cooldowns.can_collect(c.collectable_id) {
                                     return None;
                                 }
-                                // CollectableState map_x/map_y are already correctly scaled.
                                 let cx = c.map_x;
                                 let cy = c.map_y;
                                 let dx = (cx - player_x).abs();
@@ -404,20 +363,14 @@ pub(super) async fn automine_loop(
                             format!("AUTO-COLLECT: requesting {} drops within {}-tile radius", to_collect.len(), COLLECT_RADIUS));
                         for cid in to_collect {
                             let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
-                            // Keep local set in sync using cooldowns instead of optimistic deletion.
                             state.write().await.collect_cooldowns.mark_collected(cid);
                         }
                     }
                 }
 
-                // Track tiles we attempt to break this tick so we can bump their counters
-                // and log dead-end transitions outside the pathfinding closure.
                 let mut hit_this_tick: Option<(i32, i32)> = None;
-
-                // Pathfinding target selection with stickiness
                 let mut target: Option<(BotTarget, Vec<(i32, i32)>)> = None;
                 
-                // 1. Check if our sticky target is still valid
                 if let Some(st_target) = sticky_target.clone() {
                     let still_exists = {
                         let st = state.read().await;
@@ -438,7 +391,6 @@ pub(super) async fn automine_loop(
                             _ => (0, 0),
                         };
                         
-                        // Check if it's a dead-end
                         if tile_attempts.get(&(tx, ty)).copied().unwrap_or(0) < MAX_TILE_ATTEMPTS {
                             if let Some(path) = get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
                                 target = Some((st_target, path));
@@ -447,7 +399,6 @@ pub(super) async fn automine_loop(
                     }
                 }
 
-                // 2. Perform a fresh scan if no sticky target
                 if target.is_none() {
                     let st = state.read().await;
                     let best = find_best_bot_target(
@@ -474,8 +425,6 @@ pub(super) async fn automine_loop(
                     sticky_target = Some(t);
                 }
 
-
-                // Sync current targeting state to the UI.
                 {
                     let mut st = state.write().await;
                     st.current_target = target.as_ref().map(|(t, _)| t.clone());
@@ -495,135 +444,77 @@ pub(super) async fn automine_loop(
                             _logger.info("automine", Some(&_session_id), format!("TARGETING: Block at ({}, {})", target_x, target_y));
                         }
                         
-                        let resolved_path = Some(path);
-                        match resolved_path {
-                            Some(path) => {
-                                if path.len() > 1 {
-                                    let next_step = path[1];
-                                    let next_index = (next_step.1 as u32 * world_width + next_step.0 as u32) as usize;
-                                    let next_block = foreground.get(next_index).copied().unwrap_or(0);
-                                    let is_last_step = path.len() == 2;
-                                    let next_is_solid = !crate::pathfinding::astar::is_walkable_tile(next_block);
-                                    
-                                    // If the NEXT tile is solid, we definitely can't move into it.
-                                    // If the NEXT tile is the TARGET and the TARGET is a block, stay here.
-                                    let move_blocked = next_is_solid || (is_last_step && !is_collectable);
+                        if path.len() > 1 {
+                            let next_step = path[1];
+                            let next_index = (next_step.1 as u32 * world_width + next_step.0 as u32) as usize;
+                            let next_block = foreground.get(next_index).copied().unwrap_or(0);
+                            let is_last_step = path.len() == 2;
+                            let next_is_solid = !crate::pathfinding::astar::is_walkable_tile(next_block);
+                            let move_blocked = next_is_solid || (is_last_step && !is_collectable);
+                            let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
 
-                                    // Direction: face toward the target
-                                    let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+                            if move_blocked {
+                                let is_pending = {
+                                    let st = state.read().await;
+                                    st.pending_hits.get(&(next_step.0, next_step.1))
+                                        .map(|last| last.elapsed() < Duration::from_millis(900))
+                                        .unwrap_or(false)
+                                };
 
-                                    // Animation must match the physics the server can verify from
-                                    // before/after positions. Anything else triggers KErr code 1
-                                    // ("animation/physics mismatch"). Smaller map_y = higher visually
-                                    // (Unity-style top-down map coords).
-                                    let is_moving_up = next_step.1 < player_y;
-                                    let is_moving_down = next_step.1 > player_y;
+                                if is_pending {
+                                    continue; 
+                                }
 
-                                    if move_blocked {
-                                        // Check if we already hit this tile and are waiting for a DB packet
-                                        let is_pending = {
-                                            let st = state.read().await;
-                                            st.pending_hits.get(&(next_step.0, next_step.1))
-                                                .map(|last| last.elapsed() < Duration::from_millis(900))
-                                                .unwrap_or(false)
-                                        };
+                                if tile_attempts.get(&(next_step.0, next_step.1)).copied().unwrap_or(0) >= MAX_TILE_ATTEMPTS {
+                                    tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
+                                    continue;
+                                }
 
-                                        if is_pending {
-                                            // _logger.info("automine", Some(&_session_id), format!("STABILITY: Waiting for DB at ({}, {})", next_step.0, next_step.1));
-                                            continue; // Skip this tick to wait for server confirmation
-                                        }
+                                if next_step.0 == player_x && next_step.1 == player_y {
+                                    _logger.warn("automine", Some(&_session_id), "STUCK: A* suggested hitting current tile. Skipping to prevent self-mine kick.");
+                                    continue;
+                                }
 
-                                        // Check if THIS blocking tile is a dead-end
-                                        if tile_attempts.get(&(next_step.0, next_step.1)).copied().unwrap_or(0) >= MAX_TILE_ATTEMPTS {
-                                            // This path is permanently blocked. Mark the FINAL target as a dead-end too
-                                            // so we pick something else.
-                                            tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
-                                            continue;
-                                        }
+                                _logger.info("automine", Some(&_session_id), format!("MINING: Path blocked at ({}, {}), hitting from ({}, {})", next_step.0, next_step.1, player_x, player_y));
+                                let pkts = protocol::make_mine_hit_stationary(
+                                    player_x, player_y,
+                                    next_step.0, next_step.1,
+                                    dir,
+                                );
+                                let _ = send_docs_exclusive(outbound_tx, pkts).await;
+                                record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
+                                hit_this_tick = Some((next_step.0, next_step.1));
 
-                                        // Respect the DB (Destroy Block) packet: 
-                                        // If the path is blocked, we STAY STILL and hit.
-                                        // SAFETY GUARD: Never hit the tile we are standing on.
-                                        if next_step.0 == player_x && next_step.1 == player_y {
-                                            _logger.warn("automine", Some(&_session_id), "STUCK: A* suggested hitting current tile. Skipping to prevent self-mine kick.");
-                                            continue;
-                                        }
-
-                                        _logger.info("automine", Some(&_session_id), format!("MINING: Path blocked at ({}, {}), hitting from ({}, {})", next_step.0, next_step.1, player_x, player_y));
-                                        let pkts = protocol::make_mine_hit_stationary(
-                                            player_x, player_y,
-                                            next_step.0, next_step.1,
-                                            dir,
-                                        );
-                                        let _ = send_docs_exclusive(outbound_tx, pkts).await;
-                                        record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
-                                        hit_this_tick = Some((next_step.0, next_step.1));
-
-                                        {
-                                            let mut st = state.write().await;
-                                            st.pending_hits.insert((next_step.0, next_step.1), Instant::now());
-                                        }
-                                    } else {
-                                        // Pure movement: pick the anim that physically describes this transition.
-                                        let anim = if next_step.1 > player_y {
-                                            movement::ANIM_FALL // Moving down
-                                        } else if next_step.1 < player_y {
-                                            movement::ANIM_JUMP // Moving up
-                                        } else {
-                                            movement::ANIM_WALK // Moving horizontal
-                                        };
-
-                                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
-                                        let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
-                                        record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={anim}", next_step.0, next_step.1)).await;
-
-                                        {
-                                            let mut st = state.write().await;
-                                            // Update BOTH map and world so internal state stays
-                                            // self-consistent. The previous bug was updating only
-                                            // map_x/y while world_x/y stayed stale from the last
-                                            // server echo — `make_move_to_map_point` then computed
-                                            // outbound coords from drifted optimistic map and the
-                                            // server saw a giant teleport (ER=7 SpeedHack kick).
-                                            let (wx, wy) = protocol::map_to_world(
-                                                next_step.0 as f64,
-                                                next_step.1 as f64,
-                                            );
-                                            st.player_position.map_x = Some(next_step.0 as f64);
-                                            st.player_position.map_y = Some(next_step.1 as f64);
-                                            st.player_position.world_x = Some(wx);
-                                            st.player_position.world_y = Some(wy);
-                                        }
-
-                                        if path.len() == 2 {
-                                            if is_collectable {
-                                                let cid = opt_cid.unwrap();
-                                                let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
-                                                {
-                                                    let mut st = state.write().await;
-                                                    st.collect_cooldowns.mark_collected(cid);
-                                                }
-                                                record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
-                                            } else {
-                                                // SAFETY GUARD: Never hit the tile we are standing on.
-                                                if target_x == player_x && target_y == player_y {
-                                                    _logger.warn("automine", Some(&_session_id), "STUCK: Target is player tile. Skipping.");
-                                                    continue;
-                                                }
-
-                                                _logger.info("automine", Some(&_session_id), format!("MINING: Stationary hit at ({}, {})", target_x, target_y));
-                                                let hit_pkts = protocol::make_mine_hit_stationary(
-                                                    next_step.0, next_step.1,
-                                                    target_x, target_y,
-                                                    dir,
-                                                );
-                                                let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
-                                                record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
-                                                hit_this_tick = Some((target_x, target_y));
-                                            }
-                                        }
-                                    }
+                                {
+                                    let mut st = state.write().await;
+                                    st.pending_hits.insert((next_step.0, next_step.1), Instant::now());
+                                }
+                            } else {
+                                let anim = if next_step.1 > player_y {
+                                    movement::ANIM_FALL 
+                                } else if next_step.1 < player_y {
+                                    movement::ANIM_JUMP 
                                 } else {
+                                    movement::ANIM_WALK 
+                                };
+
+                                let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
+                                let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
+                                record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={anim}", next_step.0, next_step.1)).await;
+
+                                {
+                                    let mut st = state.write().await;
+                                    let (wx, wy) = protocol::map_to_world(
+                                        next_step.0 as f64,
+                                        next_step.1 as f64,
+                                    );
+                                    st.player_position.map_x = Some(next_step.0 as f64);
+                                    st.player_position.map_y = Some(next_step.1 as f64);
+                                    st.player_position.world_x = Some(wx);
+                                    st.player_position.world_y = Some(wy);
+                                }
+
+                                if path.len() == 2 {
                                     if is_collectable {
                                         let cid = opt_cid.unwrap();
                                         let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
@@ -631,31 +522,50 @@ pub(super) async fn automine_loop(
                                             let mut st = state.write().await;
                                             st.collect_cooldowns.mark_collected(cid);
                                         }
-                                        record_action(state, format!("request collectable cid={cid} on tile")).await;
+                                        record_action(state, format!("request collectable cid={cid} from ({player_x},{player_y})")).await;
                                     } else {
-                                        // Already on top of target — stationary hit (a=6 Hit) as exclusive batch
-                                        let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
-
-                                        // SAFETY GUARD: Never hit the tile we are standing on.
                                         if target_x == player_x && target_y == player_y {
-                                            _logger.warn("automine", Some(&_session_id), "STUCK: Already on target tile. Skipping hit.");
+                                            _logger.warn("automine", Some(&_session_id), "STUCK: Target is player tile. Skipping.");
                                             continue;
                                         }
 
-                                        _logger.info("automine", Some(&_session_id), format!("MINING: On-tile stationary hit at ({}, {})", target_x, target_y));
+                                        _logger.info("automine", Some(&_session_id), format!("MINING: Stationary hit at ({}, {})", target_x, target_y));
                                         let hit_pkts = protocol::make_mine_hit_stationary(
-                                            player_x, player_y,
+                                            next_step.0, next_step.1,
                                             target_x, target_y,
                                             dir,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
-                                        record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
+                                        record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
                                         hit_this_tick = Some((target_x, target_y));
                                     }
                                 }
                             }
-                            None => {
-                                tile_attempts.insert((target_x, target_y), MAX_TILE_ATTEMPTS);
+                        } else {
+                            if is_collectable {
+                                let cid = opt_cid.unwrap();
+                                let _ = send_doc(outbound_tx, protocol::make_collectable_request(cid)).await;
+                                {
+                                    let mut st = state.write().await;
+                                    st.collect_cooldowns.mark_collected(cid);
+                                }
+                                record_action(state, format!("request collectable cid={cid} on tile")).await;
+                            } else {
+                                let dir = if target_x > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+                                if target_x == player_x && target_y == player_y {
+                                    _logger.warn("automine", Some(&_session_id), "STUCK: Already on target tile. Skipping hit.");
+                                    continue;
+                                }
+
+                                _logger.info("automine", Some(&_session_id), format!("MINING: On-tile stationary hit at ({}, {})", target_x, target_y));
+                                let hit_pkts = protocol::make_mine_hit_stationary(
+                                    player_x, player_y,
+                                    target_x, target_y,
+                                    dir,
+                                );
+                                let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
+                                hit_this_tick = Some((target_x, target_y));
                             }
                         }
                     }
@@ -664,17 +574,15 @@ pub(super) async fn automine_loop(
 
                 if let Some((hx, hy)) = hit_this_tick {
                     let attempts = tile_attempts.entry((hx, hy)).or_insert(0);
-                    *attempts += 3; // We hit 3 times per burst
+                    *attempts += 3; 
                     if *attempts == MAX_TILE_ATTEMPTS {
                         _logger.warn("automine", Some(_session_id),
                             format!("dead-end: tile ({},{}) did not break in {} retries", hx, hy, MAX_TILE_ATTEMPTS));
                     }
                 }
 
-                // Force UI update AFTER all critical game packets have been sent
                 publish_state_snapshot(_logger, _session_id, state).await;
             }
         }
     }
 }
-

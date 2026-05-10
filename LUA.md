@@ -1,6 +1,6 @@
 # Lua API
 
-Moonlight includes a per-session Lua runtime powered by `mlua`.
+Hydro includes a per-session Lua runtime powered by `mlua`.
 
 - One active Lua script can run per session.
 - Starting a new script for the same session stops the old one first.

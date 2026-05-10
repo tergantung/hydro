@@ -188,6 +188,6 @@ function Bot:getWorld() end
 -- Global Instances
 -------------------------------------------------------------------------------
 
---- The global bot instance for the active Moonlight session.
+--- The global bot instance for the active Hydro session.
 ---@type Bot
 bot = nil

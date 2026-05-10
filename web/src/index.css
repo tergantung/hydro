@@ -49,57 +49,69 @@
 }
 
 :root {
-    --background: oklch(0.1 0.01 240);
-    --foreground: oklch(0.95 0.02 240);
+    /* Hydro Cyberpunk Theme - Dark Futuristic */
+    --background: #0B0D0C; /* Hitam kehijauan sangat gelap */
+    --foreground: #E7E4D8; /* Putih krem hangat */
     
-    --card: oklch(0.12 0.02 240 / 80%);
-    --card-foreground: oklch(0.95 0.02 240);
+    --card: rgba(17, 20, 19, 0.65); /* Abu gelap transparan dengan glassmorphism */
+    --card-foreground: #E7E4D8;
     
-    --popover: oklch(0.12 0.02 240);
-    --popover-foreground: oklch(0.95 0.02 240);
+    --popover: rgba(13, 16, 15, 0.95); /* Hijau hitam redup */
+    --popover-foreground: #E7E4D8;
     
-    --primary: oklch(0.7 0.15 200); /* Vibrant Cyan-Blue */
-    --primary-foreground: oklch(0.1 0.01 240);
+    --primary: #C2B66A; /* Warm yellow - Gold olive */
+    --primary-foreground: #0B0D0C;
     
-    --secondary: oklch(0.18 0.03 240);
-    --secondary-foreground: oklch(0.95 0.02 240);
+    --secondary: #111413; /* Abu gelap transparan */
+    --secondary-foreground: #E7E4D8;
     
-    --muted: oklch(0.16 0.02 240);
-    --muted-foreground: oklch(0.6 0.05 240);
+    --muted: #0D100F; /* Hijau hitam redup */
+    --muted-foreground: #8D8A7E; /* Abu beige redup */
     
-    --accent: oklch(0.25 0.08 200 / 30%);
-    --accent-foreground: oklch(0.8 0.1 200);
+    --accent: rgba(194, 182, 106, 0.15); /* Glow emas */
+    --accent-foreground: #C2B66A;
     
-    --destructive: oklch(0.6 0.18 25);
-    --destructive-foreground: oklch(0.98 0.01 25);
+    --destructive: #A13D3D; /* Error red */
+    --destructive-foreground: #E7E4D8;
     
-    --border: oklch(1 0 0 / 8%);
-    --input: oklch(1 0 0 / 5%);
-    --ring: oklch(0.7 0.15 200 / 50%);
+    --border: #262B29; /* Abu olive gelap */
+    --input: rgba(17, 20, 19, 0.8);
+    --ring: rgba(194, 182, 106, 0.5); /* Gold olive glow */
     
-    --radius: 1rem;
+    --radius: 0.75rem;
     
-    --sidebar: oklch(0.08 0.01 240);
-    --sidebar-foreground: oklch(0.9 0.02 240);
-    --sidebar-primary: oklch(0.7 0.15 200);
-    --sidebar-primary-foreground: oklch(1 0 0);
-    --sidebar-accent: oklch(1 0 0 / 5%);
-    --sidebar-accent-foreground: oklch(0.95 0.02 240);
-    --sidebar-border: oklch(1 0 0 / 8%);
-    --sidebar-ring: oklch(0.7 0.15 200);
+    --sidebar: rgba(13, 16, 15, 0.85); /* Hijau hitam redup dengan transparansi */
+    --sidebar-foreground: #E7E4D8;
+    --sidebar-primary: #8A8456; /* Gold olive */
+    --sidebar-primary-foreground: #E7E4D8;
+    --sidebar-accent: rgba(138, 132, 86, 0.1);
+    --sidebar-accent-foreground: #C2B66A;
+    --sidebar-border: #262B29;
+    --sidebar-ring: #8A8456;
+    
+    /* Additional Hydro Colors */
+    --hydro-gold: #8A8456;
+    --hydro-yellow: #C2B66A;
+    --hydro-orange: #D77A2B;
+    --hydro-soft-orange: #B96228;
+    --hydro-green: #6F8B57;
+    --hydro-error: #A13D3D;
+    --hydro-glow: rgba(194, 182, 106, 0.15);
+    --hydro-overlay: rgba(0, 0, 0, 0.55);
+    --hydro-glass: rgba(20, 24, 22, 0.65);
 }
 
 @layer utilities {
   .glass {
       backdrop-filter: blur(16px);
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--hydro-glass);
       border: 1px solid rgba(255, 255, 255, 0.08);
       box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   }
 
   .glass-dark {
       backdrop-filter: blur(24px);
-      background: rgba(0, 0, 0, 0.4);
+      background: var(--hydro-overlay);
       border: 1px solid rgba(255, 255, 255, 0.05);
       box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
   }
@@ -108,7 +120,78 @@
       background-clip: text;
       -webkit-background-clip: text;
       color: transparent;
-      background-image: linear-gradient(to bottom right, var(--color-primary), oklch(0.8 0.15 190));
+      background-image: linear-gradient(135deg, var(--hydro-yellow), var(--hydro-gold));
+  }
+  
+  .hydro-glow {
+      box-shadow: 0 0 20px var(--hydro-glow), 0 0 40px var(--hydro-glow);
+  }
+  
+  .hydro-glow-sm {
+      box-shadow: 0 0 10px var(--hydro-glow);
+  }
+  
+  .hydro-border-glow {
+      border: 1px solid var(--hydro-gold);
+      box-shadow: 0 0 15px rgba(194, 182, 106, 0.3), inset 0 0 10px rgba(194, 182, 106, 0.1);
+  }
+  
+  .hydro-error-banner {
+      background: linear-gradient(90deg, rgba(161, 61, 61, 0.15), rgba(161, 61, 61, 0.05));
+      border-left: 3px solid var(--hydro-error);
+      backdrop-filter: blur(10px);
+  }
+  
+  .hydro-success-glow {
+      box-shadow: 0 0 15px rgba(111, 139, 87, 0.4);
+  }
+  
+  .hydro-btn {
+      position: relative;
+      overflow: hidden;
+      transition: all 0.3s ease;
+  }
+  
+  .hydro-btn::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 0;
+      height: 0;
+      border-radius: 50%;
+      background: rgba(194, 182, 106, 0.2);
+      transform: translate(-50%, -50%);
+      transition: width 0.6s, height 0.6s;
+  }
+  
+  .hydro-btn:hover::before {
+      width: 300px;
+      height: 300px;
+  }
+  
+  .hydro-btn-primary {
+      background: linear-gradient(135deg, rgba(194, 182, 106, 0.1), rgba(138, 132, 86, 0.1));
+      border: 1px solid rgba(194, 182, 106, 0.4);
+      color: var(--hydro-yellow);
+  }
+  
+  .hydro-btn-primary:hover {
+      background: linear-gradient(135deg, rgba(194, 182, 106, 0.2), rgba(138, 132, 86, 0.15));
+      border-color: var(--hydro-yellow);
+      box-shadow: 0 0 20px rgba(194, 182, 106, 0.3);
+  }
+  
+  .hydro-btn-ghost {
+      background: rgba(17, 20, 19, 0.4);
+      border: 1px solid var(--border);
+      color: var(--muted-foreground);
+  }
+  
+  .hydro-btn-ghost:hover {
+      background: rgba(194, 182, 106, 0.1);
+      border-color: rgba(194, 182, 106, 0.4);
+      color: var(--hydro-yellow);
   }
 }
 

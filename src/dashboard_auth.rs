@@ -142,10 +142,10 @@ fn verify_user_password(password: String, password_hash: String) -> Result<(), S
 
 fn validate_password(password: &str) -> Result<(), String> {
     if password.trim().is_empty() {
-        return Err("password is required".to_string());
+        return Err("code is required".to_string());
     }
-    if password.len() < 8 {
-        return Err("password must be at least 8 characters".to_string());
+    if password.len() < 6 {
+        return Err("code must be at least 6 digits".to_string());
     }
     Ok(())
 }

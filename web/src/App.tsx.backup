@@ -14,7 +14,6 @@ import {
   Waves,
   Code,
   LockKey,
-  Robot,
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
@@ -79,7 +78,6 @@ import {
   startAutonether,
   stopAutonether,
   getAutonetherStatus,
-  setAutomineSpeed,
   type ActionResponse,
 } from "@/lib/api"
 import {
@@ -156,7 +154,6 @@ function App() {
   const [autonetherStatuses, setAutonetherStatuses] = useState<Record<string, { active: boolean; phase: string } | null>>({})
   const [hoverTiles, setHoverTiles] = useState<Record<string, string>>({})
   const [dropAmounts, setDropAmounts] = useState<Record<string, string>>({})
-  const [automineSpeed, setAutomineSpeedState] = useState<Record<string, number>>({})
 
   const [blockNames, setBlockNames] = useState<BlockNameMap>({})
   const [feedback, setFeedback] = useState<Feedback | null>(null)
@@ -164,7 +161,6 @@ function App() {
     useState<TutorialCompletedEvent | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string>("")
-  const [maintenance, setMaintenance] = useState<{ active: boolean; message: string } | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
 
 
@@ -172,12 +168,6 @@ function App() {
 
   const refreshDashboardStatus = useCallback(async () => {
     try {
-      // Check app status (maintenance/version)
-      const appStatus = await fetch('/api/status').then(r => r.json())
-      if (appStatus.config?.maintenance) {
-        setMaintenance({ active: true, message: appStatus.config.maintenance_message })
-      }
-
       const status = await getDashboardAuthStatus()
       setDashboardStatus(status)
       if (!status.authenticated) {
@@ -559,21 +549,6 @@ function App() {
     setDashboardBusy(true)
     const code = Math.floor(100000 + Math.random() * 900000).toString()
     setDashboardCode(code)
-    
-    // Save code to code.txt file
-    try {
-      await fetch('/api/save-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code })
-      }).catch(() => {
-        // Fallback: save to localStorage if API fails
-        localStorage.setItem('hydro_access_code', code)
-      })
-    } catch {
-      localStorage.setItem('hydro_access_code', code)
-    }
-    
     try {
       const response = await registerDashboardPassword(code)
       if (response.token) {
@@ -634,22 +609,15 @@ function App() {
   if (!dashboardStatus || !dashboardAuthenticated) {
     const registered = dashboardStatus?.registered ?? false
     return (
-      <div className="min-h-screen bg-[#0B0D0C] text-foreground selection:bg-primary/30 relative overflow-hidden">
-        {/* Animated Background */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(138,132,86,0.08),transparent_50%),radial-gradient(ellipse_at_bottom_left,rgba(194,182,106,0.05),transparent_50%)]" />
-        <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48cGF0dGVybiBpZD0iZ3JpZCIgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBwYXR0ZXJuVW5pdHM9InVzZXJTcGFjZU9uVXNlIj48cGF0aCBkPSJNIDQwIDAgTCAwIDAgMCA0MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJyZ2JhKDE5NCwxODIsMTA2LDAuMDMpIiBzdHJva2Utd2lkdGg9IjEiLz48L3BhdHRlcm4+PC9kZWZzPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9InVybCgjZ3JpZCkiLz48L3N2Zz4=')] opacity-20" />
-        
-        <div className="mx-auto flex min-h-screen max-w-[640px] items-center px-4 py-10 relative z-10">
-          <Card className="w-full glass-dark ring-1 ring-border hydro-border-glow">
-            <CardHeader className="space-y-4">
-              <CardTitle className="flex items-center gap-3 text-3xl font-bold tracking-tight">
-                <div className="relative">
-                  <Waves className="size-8 text-primary animate-pulse hydro-glow-sm" />
-                  <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full" />
-                </div>
-                <span className="text-gradient">Hydro</span>
+      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.2_0.1_260),oklch(0.05_0.01_240))] text-foreground selection:bg-primary/30">
+        <div className="mx-auto flex min-h-screen max-w-[640px] items-center px-4 py-10">
+          <Card className="w-full glass-dark ring-1 ring-white/10">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+                <Moon className="size-6 text-primary animate-pulse" />
+                <span className="text-gradient">Hydro Dashboard Locked</span>
               </CardTitle>
-              <CardDescription className="text-base">
+              <CardDescription>
                 {registered
                   ? "Enter your 6-digit code to unlock the dashboard."
                   : "Create your own code to protect the dashboard."}
@@ -657,54 +625,48 @@ function App() {
             </CardHeader>
             <CardContent className="grid gap-6">
               {dashboardCode ? (
-                <div className="flex flex-col items-center gap-4 py-8">
-                  <div className="text-xs text-muted-foreground uppercase tracking-[0.3em] font-bold">Your 6-Digit Code</div>
-                  <div className="relative">
-                    <div className="text-8xl font-black tracking-[0.25em] text-primary font-mono hydro-glow">
-                      {dashboardCode}
-                    </div>
-                    <div className="absolute inset-0 bg-primary/10 blur-3xl -z-10" />
+                <div className="flex flex-col items-center gap-4 py-6">
+                  <div className="text-sm text-muted-foreground uppercase tracking-widest font-bold">Your 6-Digit Code</div>
+                  <div className="text-7xl font-black tracking-[0.2em] text-primary font-mono drop-shadow-[0_0_15px_rgba(var(--primary),0.5)]">
+                    {dashboardCode}
                   </div>
-                  <div className="text-xs text-muted-foreground mt-10 flex items-center gap-3 px-4 py-2 rounded-lg bg-black/40 border border-primary/20">
-                    <SpinnerGap className="size-4 animate-spin text-primary" />
-                    <span>Entering dashboard in <span className="text-primary font-bold text-base mx-1">{countdown}</span> seconds...</span>
-                  </div>
-                  <div className="text-[10px] text-muted-foreground/60 mt-4 text-center max-w-sm">
-                    Code will be saved to <span className="text-primary font-mono">code.txt</span>
+                  <div className="text-xs text-muted-foreground mt-8 flex items-center gap-2">
+                    <SpinnerGap className="size-3 animate-spin" />
+                    Entering dashboard in <span className="text-primary font-bold text-sm">{countdown}</span> seconds...
                   </div>
                 </div>
               ) : (
                 <>
-                  <div className="grid gap-3">
-                    <label className="text-xs text-muted-foreground uppercase tracking-wider">Access Code</label>
+                  <div className="grid gap-2">
+                    <label className="text-xs text-muted-foreground">Code</label>
                     <Input
                       type="text"
                       maxLength={6}
                       value={dashboardPassword}
                       onChange={(event) => setDashboardPassword(event.target.value.replace(/\D/g, "").slice(0, 6))}
                       placeholder="000000"
-                      className="rounded-xl border-border bg-black/40 text-center text-4xl tracking-[0.6em] font-mono h-20 hydro-border-glow focus:ring-primary/50"
+                      className="rounded-xl border-white/10 bg-white/5 text-center text-3xl tracking-[0.5em] font-mono h-16"
                     />
                   </div>
                   <div className="flex flex-col gap-3">
                     <Button
                       onClick={() => void handleDashboardLogin()}
                       disabled={dashboardBusy || dashboardPassword.length < 6}
-                      className="rounded-xl h-14 text-lg font-bold bg-primary/20 hover:bg-primary/30 border border-primary/50 text-primary hydro-glow-sm transition-all"
+                      className="rounded-xl h-12 text-lg font-bold"
                     >
                       {dashboardBusy ? (
-                        <SpinnerGap className="size-6 animate-spin" />
+                        <SpinnerGap className="size-5 animate-spin" />
                       ) : (
-                        <LockKey className="size-6" />
+                        <Plug className="size-5" />
                       )}
-                      <span className="ml-2">Unlock Dashboard</span>
+                      Unlock Dashboard
                     </Button>
                     {!registered && (
                       <Button
                         variant="outline"
                         onClick={() => void handleCreateCode()}
                         disabled={dashboardBusy}
-                        className="rounded-xl border-primary/40 bg-black/40 text-primary hover:bg-primary/10 h-12 font-semibold"
+                        className="rounded-xl border-primary/30 text-primary hover:bg-primary/10 h-10"
                       >
                         Create your own code
                       </Button>
@@ -714,10 +676,10 @@ function App() {
               )}
               {feedback && !dashboardCode ? (
                 <div
-                  className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+                  className={`rounded-xl border px-3 py-2 text-xs ${
                     feedback.kind === "error"
-                      ? "hydro-error-banner text-[#E7E4D8]"
-                      : "border-[#6F8B57]/40 bg-[#6F8B57]/10 text-[#E7E4D8] hydro-success-glow"
+                      ? "border-red-500/30 bg-red-500/10 text-red-100"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
                   }`}
                 >
                   {feedback.message}
@@ -756,121 +718,31 @@ function App() {
     return delayMs
   }
 
-  if (maintenance?.active) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0c] p-6 text-foreground selection:bg-primary/30">
-        <div className="fixed inset-0 -z-10 bg-[radial-gradient(circle_at_50%_50%,rgba(50,50,80,0.15),transparent)]" />
-        <Card className="max-w-md w-full border-white/10 bg-card/50 backdrop-blur-3xl ring-1 ring-white/10 hydro-glow-lg">
-          <CardHeader className="text-center pb-2">
-            <div className="mx-auto mb-4 flex size-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
-              <Gear className="size-8 text-primary animate-spin-slow" />
-            </div>
-            <CardTitle className="text-2xl font-bold tracking-tight text-gradient">System Maintenance</CardTitle>
-            <CardDescription className="text-muted-foreground mt-2">
-              Hydro is currently undergoing scheduled maintenance or updates.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6 pt-4">
-            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-center">
-              <p className="text-sm text-primary/90 font-medium">
-                "{maintenance.message}"
-              </p>
-            </div>
-            <div className="space-y-2 text-center text-xs text-muted-foreground">
-              <p>Please check back later. We are working hard to bring you the best experience.</p>
-              <div className="flex justify-center gap-4 mt-4 text-primary">
-                <a href="#" className="hover:underline transition-all">Discord</a>
-                <a href="#" className="hover:underline transition-all">Updates</a>
-                <a href="#" className="hover:underline transition-all">Support</a>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
   return (
-    <div className="min-h-screen bg-[#0B0D0C] text-foreground selection:bg-primary/30 relative overflow-hidden">
-      {/* Animated Background */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(138,132,86,0.08),transparent_50%),radial-gradient(ellipse_at_bottom_left,rgba(194,182,106,0.05),transparent_50%)]" />
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48cGF0dGVybiBpZD0iZ3JpZCIgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBwYXR0ZXJuVW5pdHM9InVzZXJTcGFjZU9uVXNlIj48cGF0aCBkPSJNIDQwIDAgTCAwIDAgMCA0MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJyZ2JhKDE5NCwxODIsMTA2LDAuMDMpIiBzdHJva2Utd2lkdGg9IjEiLz48L3BhdHRlcm4+PC9kZWZzPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9InVybCgjZ3JpZCkiLz48L3N2Zz4=')] opacity-20" />
-      
-      <div className="flex h-screen relative z-10">
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,oklch(0.25_0.12_260),oklch(0.02_0.02_240))] text-foreground selection:bg-primary/30">
+      <div className="flex h-screen">
         {/* Left Sidebar */}
-        <div className={`flex flex-col border-r border-border bg-[var(--sidebar)] backdrop-blur-xl transition-all duration-300 z-50 relative ${sidebarCollapsed ? "w-16 items-center" : "w-80"}`}>
-          {/* Logo & Actions Header */}
-          <div className={`flex items-center p-4 border-b border-border h-16 w-full ${sidebarCollapsed ? "justify-center" : "justify-between"}`}>
-            {sidebarCollapsed ? (
-              <Waves className="size-6 text-primary hydro-glow-sm" />
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <Waves className="size-6 text-primary hydro-glow-sm" />
-                  <span className="font-bold text-lg text-gradient tracking-tight">Hydro</span>
-                </div>
-                
-                <div className="flex items-center gap-1.5">
-                  {/* Scripting Icon */}
-                  <button
-                    onClick={() => setMainView(mainView === "scripting" ? "sessions" : "scripting")}
-                    className={`p-2 rounded-lg transition-all ${
-                      mainView === "scripting"
-                        ? "bg-primary/20 text-primary border border-primary/40 hydro-glow-sm"
-                        : "hover:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent hover:border-primary/20"
-                    }`}
-                    title="Lua Scripting"
-                  >
-                    <Code className="size-4" />
-                  </button>
-                  
-                  {/* Settings Icon */}
-                  <button
-                    onClick={() => setSettingsOpen(true)}
-                    className="p-2 rounded-lg transition-all hover:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent hover:border-primary/20"
-                    title="Settings"
-                  >
-                    <Gear className="size-4" />
-                  </button>
-                  
-                  {/* Collapse Toggle */}
-                  <button 
-                    onClick={() => setSidebarCollapsed(!sidebarCollapsed)} 
-                    className="p-2 rounded-lg transition-all hover:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent hover:border-primary/20"
-                    title="Collapse Sidebar"
-                  >
-                    <List className="size-4" />
-                  </button>
-                </div>
-              </>
-            )}
+        <div className={`flex flex-col border-r border-white/10 bg-black/20 backdrop-blur-md transition-all duration-300 z-50 relative ${sidebarCollapsed ? "w-16 items-center" : "w-80"}`}>
+          {/* Toggle Button */}
+          <div className={`flex items-center p-4 border-b border-white/10 h-14 w-full ${sidebarCollapsed ? "justify-center" : "justify-between"}`}>
+            {!sidebarCollapsed && <span className="font-bold text-sm text-gradient truncate">Hydro Menu</span>}
+            <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="p-1 hover:bg-white/10 rounded-md transition-colors text-muted-foreground hover:text-foreground">
+              <List className="size-5" />
+            </button>
           </div>
-          
-          {/* Expand Button (Only visible when collapsed) */}
-          {sidebarCollapsed && (
-            <div className="w-full p-2 border-b border-border">
-              <button 
-                onClick={() => setSidebarCollapsed(false)} 
-                className="w-full p-2 rounded-lg transition-all hover:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent hover:border-primary/20"
-                title="Expand Sidebar"
-              >
-                <CaretRight className="size-4" />
-              </button>
-            </div>
-          )}
 
           {/* Create Session Section */}
-          <div className="group relative w-full border-b border-border">
+          <div className="group relative w-full border-b border-white/10">
             <div 
-              className={`flex items-center gap-3 p-4 cursor-pointer hover:bg-primary/5 transition-all ${sidebarCollapsed ? 'justify-center' : ''}`}
+              className={`flex items-center gap-2 p-4 cursor-pointer hover:bg-white/5 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}
               onClick={() => {
                 if (!sidebarCollapsed) {
                   setCreateSessionExpanded(!createSessionExpanded)
                 }
               }}
             >
-              <Plug className="size-5 text-primary shrink-0" />
-              {!sidebarCollapsed && <h2 className="font-semibold text-sm truncate flex-1">Auth Session</h2>}
+              <Moon className="size-5 text-primary shrink-0" />
+              {!sidebarCollapsed && <h2 className="font-bold text-sm truncate flex-1">Create Session</h2>}
               {!sidebarCollapsed && (
                 <CaretRight className={`size-4 text-muted-foreground transition-transform ${createSessionExpanded ? 'rotate-90' : ''}`} />
               )}
@@ -880,20 +752,20 @@ function App() {
             <div className={`
               overflow-hidden transition-all duration-300 ease-in-out
               ${sidebarCollapsed 
-                ? 'absolute left-[100%] top-0 w-80 bg-[var(--sidebar)] backdrop-blur-xl border border-border rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
+                ? 'absolute left-[100%] top-0 w-80 bg-black/95 backdrop-blur-xl border border-white/10 rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
                 : createSessionExpanded 
                   ? 'px-4 pb-4 block opacity-100 max-h-[1000px]' 
                   : 'px-4 max-h-0 opacity-0 invisible'
               }
             `}>
-              <div className="space-y-4 rounded-xl border border-border bg-black/40 p-3 mt-2 shadow-inner">
+              <div className="space-y-4 rounded-xl border border-white/5 bg-white/5 p-3 mt-2 shadow-inner">
               <div>
-                <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Auth Kind</label>
+                <label className="text-[10px] text-muted-foreground mb-1 block">Auth Kind</label>
                 <Select
                   value={authKind}
                   onValueChange={(value) => setAuthKind(value as AuthKind)}
                 >
-                  <SelectTrigger className="w-full rounded-lg border-border bg-black/60 h-8 text-xs focus:ring-primary/30 hydro-border-glow">
+                  <SelectTrigger className="w-full rounded-lg border-white/10 bg-black/40 h-8 text-xs focus:ring-primary/30">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -905,18 +777,18 @@ function App() {
               </div>
 
               <div>
-                <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Device ID</label>
+                <label className="text-[10px] text-muted-foreground mb-1 block">Device ID</label>
                 <div className="flex gap-2">
                   <Input
                     value={deviceId}
                     onChange={(event) => setDeviceId(event.target.value)}
                     placeholder="57ce..."
-                    className="rounded-lg border-border bg-black/60 h-9 text-xs font-mono focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all"
+                    className="rounded-lg border-white/10 bg-black/40 h-8 text-xs font-mono"
                   />
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary h-9 px-3 text-xs transition-all"
+                    className="rounded-lg border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary h-8 px-3 text-xs shadow-[0_0_10px_-3px_rgba(var(--primary),0.3)] transition-all"
                     onClick={() => setDeviceId(generateDeviceId())}
                   >
                     Gen
@@ -926,13 +798,13 @@ function App() {
 
               {authKind === "jwt" ? (
                 <div>
-                  <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">JWT Token</label>
+                  <label className="text-[10px] text-muted-foreground mb-1 block">JWT</label>
                   <Textarea
                     value={jwt}
                     onChange={(event) => setJwt(event.target.value)}
                     rows={3}
                     placeholder="eyJ..."
-                    className="rounded-lg border-border bg-black/60 text-xs font-mono focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all resize-none"
+                    className="rounded-lg border-white/10 bg-black/40 text-xs font-mono"
                   />
                 </div>
               ) : null}
@@ -940,21 +812,21 @@ function App() {
               {authKind === "email_password" ? (
                 <>
                   <div>
-                    <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Email</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">Email</label>
                     <Input
                       value={email}
                       onChange={(event) => setEmail(event.target.value)}
                       placeholder="you@example.com"
-                      className="rounded-lg border-border bg-black/60 h-9 text-xs focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all"
+                      className="rounded-lg border-white/10 bg-black/40 h-8 text-xs"
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Password</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">Password</label>
                     <Input
                       type="password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
-                      className="rounded-lg border-border bg-black/60 h-9 text-xs focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all"
+                      className="rounded-lg border-white/10 bg-black/40 h-8 text-xs"
                     />
                   </div>
                 </>
@@ -963,27 +835,18 @@ function App() {
               <Button
                 onClick={() => void handleConnect()}
                 disabled={connecting}
-                className="w-full rounded-lg h-10 text-xs font-semibold border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition-all mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-xl h-9 text-xs font-bold border border-primary/50 bg-primary/20 hover:bg-primary/30 text-primary shadow-[0_0_15px_-3px_rgba(var(--primary),0.4)] transition-all mt-2"
               >
-                {connecting ? (
-                  <>
-                    <SpinnerGap className="size-4 animate-spin mr-2" />
-                    Connecting...
-                  </>
-                ) : (
-                  <>
-                    <Plug className="size-4 mr-2" />
-                    Connect Session
-                  </>
-                )}
+                {connecting ? <SpinnerGap className="size-4 animate-spin mr-2" /> : <Plug className="size-4 mr-2" />}
+                Connect Session
               </Button>
 
               {feedback ? (
                 <div
-                  className={`rounded-lg border px-3 py-2 text-[10px] font-medium ${
+                  className={`rounded-lg border px-2 py-1.5 text-[10px] ${
                     feedback.kind === "error"
-                      ? "hydro-error-banner"
-                      : "border-[#6F8B57]/40 bg-[#6F8B57]/10 text-[#E7E4D8]"
+                      ? "border-red-500/30 bg-red-500/10 text-red-100"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
                   }`}
                 >
                   {feedback.message}
@@ -994,17 +857,17 @@ function App() {
           </div>
 
           {/* Bot List Section */}
-          <div className="group relative w-full border-b border-border flex-1 flex flex-col min-h-0">
-            <div className={`flex items-center gap-3 p-4 cursor-pointer hover:bg-primary/5 transition-all ${sidebarCollapsed ? 'justify-center' : ''}`}>
-              <Robot className="size-5 text-primary shrink-0" />
-              {!sidebarCollapsed && <h2 className="font-semibold text-sm truncate flex-1">Bots</h2>}
+          <div className="group relative w-full border-b border-white/10 flex-1 flex flex-col min-h-0">
+            <div className={`flex items-center gap-2 p-4 cursor-pointer hover:bg-white/5 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}>
+              <Plug className="size-5 text-primary shrink-0" />
+              {!sidebarCollapsed && <h2 className="font-bold text-sm truncate flex-1">Bot List</h2>}
               {sidebarCollapsed && <CaretRight className="size-3 text-muted-foreground hidden group-hover:block absolute right-1" />}
             </div>
             
             <div className={`
               overflow-y-auto transition-all duration-300 flex-1
               ${sidebarCollapsed 
-                ? 'absolute left-[100%] top-0 w-80 h-96 max-h-[80vh] bg-[var(--sidebar)] backdrop-blur-xl border border-border rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
+                ? 'absolute left-[100%] top-0 w-80 h-96 max-h-[80vh] bg-black/95 backdrop-blur-xl border border-white/10 rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
                 : 'px-4 pb-4 block'
               }
             `}>
@@ -1012,10 +875,10 @@ function App() {
                 {sessions.map((session) => (
                   <div
                     key={session.id}
-                    className={`rounded-lg border transition-all cursor-pointer ${
+                    className={`rounded-lg border transition-all ${
                       activeSessionId === session.id
-                        ? "border-primary/60 bg-primary/10 hydro-border-glow"
-                        : "border-border bg-black/40 hover:border-primary/30 hover:bg-primary/5"
+                        ? "border-primary/50 bg-primary/10"
+                        : "border-white/10 bg-white/5"
                     }`}
                   >
                     <button
@@ -1073,6 +936,69 @@ function App() {
                     No bots yet
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+
+          {/* Scripting Section */}
+          <div className="group relative w-full border-b border-white/10">
+            <div className={`flex items-center gap-2 p-4 cursor-pointer hover:bg-white/5 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}>
+              <Bug className="size-5 text-primary shrink-0" />
+              {!sidebarCollapsed && <h2 className="font-bold text-sm truncate flex-1">Scripting</h2>}
+              {sidebarCollapsed && <CaretRight className="size-3 text-muted-foreground hidden group-hover:block absolute right-1" />}
+            </div>
+            
+            <div className={`
+              overflow-hidden transition-all duration-300
+              ${sidebarCollapsed 
+                ? 'absolute left-[100%] top-0 w-80 bg-black/95 backdrop-blur-xl border border-white/10 rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
+                : 'px-4 pb-4 block'
+              }
+            `}>
+              <div className="text-[10px] text-muted-foreground mb-3 leading-relaxed">
+                Create, edit, and run custom Lua scripts to automate complex tasks across all your active bot sessions.
+              </div>
+              <Button
+                variant="outline"
+                className="w-full rounded-xl border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary/50 font-bold text-xs shadow-[0_0_15px_-3px_rgba(56,189,248,0.2)] transition-all"
+                onClick={() => {
+                  setMainView("scripting")
+                  if (window.innerWidth < 1024) setSidebarCollapsed(true)
+                }}
+              >
+                <Code className="size-4 mr-2" />
+                Launch Lua Editor
+              </Button>
+            </div>
+          </div>
+
+          {/* Settings Section */}
+          <div className="group relative w-full">
+            <div className={`flex items-center gap-2 p-4 cursor-pointer hover:bg-white/5 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}>
+              <Gear className="size-5 text-primary shrink-0" />
+              {!sidebarCollapsed && <h2 className="font-bold text-sm truncate flex-1">Settings</h2>}
+              {sidebarCollapsed && <CaretRight className="size-3 text-muted-foreground hidden group-hover:block absolute right-1" />}
+            </div>
+            
+            <div className={`
+              overflow-hidden transition-all duration-300
+              ${sidebarCollapsed 
+                ? 'absolute left-[100%] bottom-0 w-80 bg-black/95 backdrop-blur-xl border border-white/10 rounded-r-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible shadow-2xl p-4 z-[60] ml-0.5' 
+                : 'px-4 pb-4 block'
+              }
+            `}>
+              <div className="text-[10px] text-muted-foreground mb-3 leading-relaxed">
+                Manage your dashboard security and system settings.
+              </div>
+              <div className="space-y-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full rounded-xl border-white/10 bg-white/5 text-xs hover:bg-white/10"
+                >
+                  <Gear className="size-4 mr-2" />
+                  Open Settings
+                </Button>
               </div>
             </div>
           </div>
@@ -1193,7 +1119,7 @@ function App() {
                                       mutateSessionInput(session.id, "world", event.target.value)
                                     }
                                     placeholder="World name"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                   />
                                   <Button
                                     className="rounded-xl"
@@ -1207,14 +1133,14 @@ function App() {
                                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() => void runAction(() => leaveWorld(session.id))}
                                   >
                                     Leave
                                   </Button>
                                   <Button
-                                    variant="ghost"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() =>
                                       void runAction(() => disconnectSession(session.id))
                                     }
@@ -1222,8 +1148,8 @@ function App() {
                                     Disconnect
                                   </Button>
                                   <Button
-                                    variant="ghost"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    variant="outline"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() =>
                                       void runAction(() => reconnectSession(session.id))
                                     }
@@ -1243,7 +1169,7 @@ function App() {
                                     <div />
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() =>
                                         void runAction(() => moveSession(session.id, "up"))
                                       }
@@ -1255,7 +1181,7 @@ function App() {
                                   <div className="grid grid-cols-3 gap-2">
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() =>
                                         void runAction(() => moveSession(session.id, "left"))
                                       }
@@ -1264,7 +1190,7 @@ function App() {
                                     </Button>
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() =>
                                         void runAction(() => moveSession(session.id, "down"))
                                       }
@@ -1273,7 +1199,7 @@ function App() {
                                     </Button>
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() =>
                                         void runAction(() => moveSession(session.id, "right"))
                                       }
@@ -1330,61 +1256,6 @@ function App() {
                                 </div>
                               </div>
 
-                              {/* Automine Speed Control */}
-                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
-                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
-                                  <Gear className="size-3.5" />
-                                  Automine Speed Setting
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  Adjust mining speed. Lower = safer from anti-cheat, Higher = faster but riskier.
-                                </div>
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs text-muted-foreground">Slower (Safe)</span>
-                                    <span className="text-sm font-bold text-primary">
-                                      {((automineSpeed[session.id] ?? 1.0) * 100).toFixed(0)}%
-                                    </span>
-                                    <span className="text-xs text-muted-foreground">Faster (Risk)</span>
-                                  </div>
-                                  <input
-                                    type="range"
-                                    min="0.4"
-                                    max="1.6"
-                                    step="0.1"
-                                    value={automineSpeed[session.id] ?? 1.0}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value)
-                                      setAutomineSpeedState(prev => ({ ...prev, [session.id]: val }))
-                                    }}
-                                    className="w-full h-2 rounded-full appearance-none cursor-pointer accent-primary"
-                                  />
-                                  <div className="flex gap-1.5">
-                                    {([0.5, 0.7, 1.0, 1.3, 1.6] as const).map(preset => (
-                                      <Button
-                                        key={preset}
-                                        size="xs"
-                                        variant="outline"
-                                        className={`flex-1 rounded-lg text-[10px] border ${
-                                          Math.abs((automineSpeed[session.id] ?? 1.0) - preset) < 0.05
-                                            ? 'border-primary/60 bg-primary/20 text-primary'
-                                            : 'border-border bg-black/40 text-muted-foreground hover:border-primary/40 hover:bg-primary/10'
-                                        } transition-all`}
-                                        onClick={() => setAutomineSpeedState(prev => ({ ...prev, [session.id]: preset }))}
-                                      >
-                                        {preset === 0.5 ? 'Safe' : preset === 1.0 ? 'Normal' : preset === 1.6 ? 'Max' : `${preset}x`}
-                                      </Button>
-                                    ))}
-                                  </div>
-                                  <Button
-                                    className="w-full rounded-xl bg-primary/20 hover:bg-primary/30 border border-primary/50 text-primary font-bold"
-                                    onClick={() => void runAction(() => setAutomineSpeed(session.id, automineSpeed[session.id] ?? 1.0))}
-                                  >
-                                    Apply Speed
-                                  </Button>
-                                </div>
-                              </div>
-
                               <div className="grid gap-3 rounded-2xl glass-dark p-4">
                                 <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                                   <Fish className="size-3.5" />
@@ -1396,12 +1267,12 @@ function App() {
                                     mutateSessionInput(session.id, "bait", event.target.value)
                                   }
                                   placeholder="Bait name or lure name"
-                                  className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                  className="rounded-xl border-white/10 bg-white/5"
                                 />
                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() =>
                                       void runAction(() =>
                                         startFishing(session.id, "left", inputs.bait),
@@ -1413,7 +1284,7 @@ function App() {
                                   </Button>
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() =>
                                       void runAction(() =>
                                         startFishing(session.id, "right", inputs.bait),
@@ -1425,7 +1296,7 @@ function App() {
                                   </Button>
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() => void runAction(() => stopFishing(session.id))}
                                     disabled
                                   >
@@ -1489,7 +1360,7 @@ function App() {
                                 </div>
                                 <Button
                                   variant="outline"
-                                  className="w-full rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                  className="w-full rounded-xl border-white/10 bg-white/5"
                                   onClick={() => void runAction(() => automateTutorial(session.id))}
                                   disabled
                                 >
@@ -1512,19 +1383,19 @@ function App() {
                                       mutateSessionInput(session.id, "chat", event.target.value)
                                     }
                                     placeholder="Say something in world chat"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                   />
                                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() => void runAction(() => talk(session.id, inputs.chat))}
                                     >
                                       Send Chat
                                     </Button>
                                     <Button
                                       variant="outline"
-                                      className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                      className="rounded-xl border-white/10 bg-white/5"
                                       onClick={() => mutateSessionInput(session.id, "chat", "")}
                                     >
                                       Clear
@@ -1548,7 +1419,7 @@ function App() {
                                       mutateSessionInput(session.id, "spam", event.target.value)
                                     }
                                     placeholder="Spam message"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                   />
                                   <Input
                                     type="number"
@@ -1559,7 +1430,7 @@ function App() {
                                       mutateSessionInput(session.id, "spamDelay", event.target.value)
                                     }
                                     placeholder="5"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                   />
                                 </div>
                                 <div className="text-[11px] text-muted-foreground">
@@ -1568,7 +1439,7 @@ function App() {
                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() =>
                                       void runAction(() =>
                                         startSpam(
@@ -1583,7 +1454,7 @@ function App() {
                                   </Button>
                                   <Button
                                     variant="outline"
-                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                    className="rounded-xl border-white/10 bg-white/5"
                                     onClick={() => void runAction(() => stopSpam(session.id))}
                                   >
                                     Stop Spam
@@ -1709,254 +1580,72 @@ function App() {
           </div>
         </div>
       ) : mainView === "scripting" ? (
-        <div className="flex h-full bg-black/40">
-          {/* Main Editor Area */}
-          <div className="flex-1 flex flex-col p-6">
-            <div className="flex items-center justify-between mb-4 pb-4 border-b border-white/10">
-              <div className="flex items-center gap-3">
-                <Code className="size-6 text-primary hydro-glow-sm" />
-                <div>
-                  <h1 className="text-xl font-bold text-gradient">Lua Script Editor</h1>
-                  <p className="text-xs text-muted-foreground">Session: {activeSessionId ? sessions.find(s => s.id === activeSessionId)?.username || activeSessionId : "None"}</p>
-                </div>
+        <div className="flex flex-col h-full bg-black/40 p-6">
+          <div className="flex items-center justify-between mb-4 pb-4 border-b border-white/10">
+            <div className="flex items-center gap-3">
+              <Code className="size-6 text-primary" />
+              <div>
+                <h1 className="text-xl font-bold">Lua Code Editor</h1>
+                <p className="text-xs text-muted-foreground">Editing script for session: {activeSessionId || "None"}</p>
               </div>
-              <Button 
-                variant="ghost" 
-                className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all" 
-                onClick={() => setMainView("sessions")}
-              >
-                Close Editor
-              </Button>
             </div>
-            
-            {activeSessionId && sessions.find(s => s.id === activeSessionId) ? (
-              <div className="flex-1 flex flex-col gap-4">
-                <Textarea
-                  value={sessionInputs[activeSessionId]?.luaSource ?? ""}
-                  onChange={(event) =>
-                    mutateSessionInput(activeSessionId, "luaSource", event.target.value)
-                  }
-                  className="flex-1 rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-foreground transition-all font-mono text-sm p-4 focus-visible:ring-primary/50 resize-none"
-                  placeholder="-- Write your Lua script here\nbot:talk('Hello World!')\nbot:sleep(1000)"
-                />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button 
-                    className="rounded-xl bg-primary/20 hover:bg-primary/30 border border-primary/50 text-primary hydro-glow-sm"
-                    onClick={() => void runLuaAction(activeSessionId, () => startLuaScript(activeSessionId, sessionInputs[activeSessionId]?.luaSource ?? ""))}
-                    disabled={luaStatuses[activeSessionId]?.running}
-                  >
-                    <Bug className="size-4 mr-2" />
-                    Execute Script
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                    onClick={() => void runAction(() => stopLuaScript(activeSessionId))}
-                    disabled={!luaStatuses[activeSessionId]?.running}
-                  >
-                    Stop Script
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
-                    onClick={() => void refreshLuaStatus(activeSessionId)}
-                  >
-                    Refresh Status
-                  </Button>
-                  
-                  <div className="ml-auto flex items-center gap-3">
-                    {luaStatuses[activeSessionId]?.running && (
-                      <SpinnerGap className="size-4 animate-spin text-primary" />
-                    )}
-                    <div className="text-xs font-mono px-3 py-1.5 rounded-lg border border-white/10 bg-white/5">
-                      <span className={luaStatuses[activeSessionId]?.running ? "text-emerald-400" : "text-slate-400"}>
-                        {luaStatuses[activeSessionId]?.running ? "● Running" : "○ Idle"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+            <Button variant="outline" className="rounded-xl border-white/10 bg-white/5" onClick={() => setMainView("sessions")}>
+              Close Editor
+            </Button>
+          </div>
+          
+          {activeSessionId && sessions.find(s => s.id === activeSessionId) ? (
+            <div className="flex-1 flex flex-col gap-4">
+              <Textarea
+                value={sessionInputs[activeSessionId]?.luaSource ?? ""}
+                onChange={(event) =>
+                  mutateSessionInput(activeSessionId, "luaSource", event.target.value)
+                }
+                className="flex-1 rounded-xl border-white/10 bg-white/5 font-mono text-sm p-4 focus-visible:ring-primary/50"
+                placeholder={"bot:talk(\"hello\")\nbot:sleep(500)\nlocal world = bot:getWorld()"}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button 
+                  className="rounded-xl"
+                  onClick={() => void runLuaAction(activeSessionId, () => startLuaScript(activeSessionId, sessionInputs[activeSessionId]?.luaSource ?? ""))}
+                >
+                  <Bug className="size-4 mr-2" />
+                  Execute Script
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                  onClick={() => void runAction(() => stopLuaScript(activeSessionId))}
+                >
+                  Terminate Script
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="rounded-xl border-white/10 bg-white/5"
+                  onClick={() => void refreshLuaStatus(activeSessionId)}
+                >
+                  Refresh Status
+                </Button>
                 
-                {/* Status Messages */}
-                {luaStatuses[activeSessionId]?.last_error && (
-                  <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
-                    <div className="font-bold mb-1">Error:</div>
-                    <div className="font-mono text-xs">{luaStatuses[activeSessionId]?.last_error}</div>
-                  </div>
-                )}
-                {luaStatuses[activeSessionId]?.last_result_message && !luaStatuses[activeSessionId]?.last_error && (
-                  <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-300">
-                    <div className="font-bold mb-1">Success:</div>
-                    <div className="font-mono text-xs">{luaStatuses[activeSessionId]?.last_result_message}</div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center">
-                <Card className="border-white/10 bg-card/50 ring-white/10 max-w-md w-full">
-                  <CardContent className="px-4 py-8 text-center flex flex-col items-center gap-3">
-                    <Robot className="size-12 text-muted-foreground opacity-50" />
-                    <div className="text-sm text-muted-foreground">
-                      Please select an active bot session from the sidebar to edit its script.
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-          </div>
-
-          {/* Documentation Sidebar */}
-          <div className="w-96 border-l border-border bg-black/60 backdrop-blur-xl overflow-y-auto p-4">
-            <h2 className="text-lg font-bold mb-4 text-primary">API Documentation</h2>
-            
-            <div className="space-y-4 text-xs">
-              {/* Movement Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🚶 Movement</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:walk(dx, dy)</code> - Walk relative</div>
-                  <div><code className="text-emerald-400">bot:walkTo(x, y)</code> - Walk to position</div>
-                  <div><code className="text-emerald-400">bot:walkToSpawn()</code> - Walk to spawn</div>
-                  <div><code className="text-emerald-400">bot:findPath(x, y)</code> - Get path array</div>
-                </div>
-              </div>
-
-              {/* World Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🌍 World</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:warp(world)</code> - Warp to world</div>
-                  <div><code className="text-emerald-400">bot:getCurrentWorld()</code> - Get world name</div>
-                  <div><code className="text-emerald-400">bot:getWorld()</code> - Get world data</div>
-                  <div><code className="text-emerald-400">bot:getWorldSize()</code> - Get width/height</div>
-                </div>
-              </div>
-
-              {/* Block Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🧱 Blocks</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:punch(dx, dy)</code> - Punch relative</div>
-                  <div><code className="text-emerald-400">bot:punchAt(x, y)</code> - Punch at position</div>
-                  <div><code className="text-emerald-400">bot:place(dx, dy, id)</code> - Place relative</div>
-                  <div><code className="text-emerald-400">bot:placeAt(x, y, id)</code> - Place at position</div>
-                  <div><code className="text-emerald-400">bot:getTileAt(x, y)</code> - Get tile info</div>
-                  <div><code className="text-emerald-400">bot:isSolid(x, y)</code> - Check if solid</div>
-                  <div><code className="text-emerald-400">bot:isEmpty(x, y)</code> - Check if empty</div>
-                  <div><code className="text-emerald-400">bot:findBlock(id, dist)</code> - Find nearest block</div>
-                  <div><code className="text-emerald-400">bot:countBlocks(id)</code> - Count blocks</div>
-                </div>
-              </div>
-
-              {/* Inventory Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🎒 Inventory</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:getInventory()</code> - Get all items</div>
-                  <div><code className="text-emerald-400">bot:getInventoryCount(id)</code> - Get item count</div>
-                  <div><code className="text-emerald-400">bot:hasItem(id, min)</code> - Check if has item</div>
-                  <div><code className="text-emerald-400">bot:wear(id)</code> - Wear item</div>
-                  <div><code className="text-emerald-400">bot:unwear(id)</code> - Unwear item</div>
-                </div>
-              </div>
-
-              {/* Farming Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🌾 Farming</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:isTileReadyToHarvest(x, y)</code> - Check ready</div>
-                  <div><code className="text-emerald-400">bot:harvestAll()</code> - Harvest all ready tiles</div>
-                </div>
-              </div>
-
-              {/* Collection Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">💎 Collection</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:collect()</code> - Collect items</div>
-                  <div><code className="text-emerald-400">bot:getCollectables()</code> - Get all collectables</div>
-                  <div><code className="text-emerald-400">bot:findNearestCollectable()</code> - Find nearest</div>
-                </div>
-              </div>
-
-              {/* Utility Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🔧 Utility</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:sleep(ms)</code> - Sleep milliseconds</div>
-                  <div><code className="text-emerald-400">bot:talk(msg)</code> - Send chat message</div>
-                  <div><code className="text-emerald-400">bot:log(msg)</code> - Print to console</div>
-                  <div><code className="text-emerald-400">bot:getPosition()</code> - Get current position</div>
-                  <div><code className="text-emerald-400">bot:getStatus()</code> - Get bot status</div>
-                  <div><code className="text-emerald-400">bot:isInWorld()</code> - Check if in world</div>
-                  <div><code className="text-emerald-400">bot:isNearSpawn(range)</code> - Check near spawn</div>
-                </div>
-              </div>
-
-              {/* Math Functions */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">📐 Math</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:getDistance(x1,y1,x2,y2)</code> - Euclidean</div>
-                  <div><code className="text-emerald-400">bot:getManhattanDistance(x1,y1,x2,y2)</code> - Manhattan</div>
-                  <div><code className="text-emerald-400">bot:isInRange(x1,y1,x2,y2,r)</code> - Check range</div>
-                </div>
-              </div>
-
-              {/* Control Flow */}
-              <div className="rounded-lg border border-border bg-black/40 p-3">
-                <h3 className="font-bold text-primary mb-2">🔄 Control Flow</h3>
-                <div className="space-y-2 text-muted-foreground">
-                  <div><code className="text-emerald-400">bot:repeat(n, func)</code> - Repeat function</div>
-                  <div><code className="text-emerald-400">bot:waitUntil(cond, timeout)</code> - Wait for condition</div>
-                </div>
-              </div>
-
-              {/* Examples */}
-              <div className="rounded-lg border border-primary/40 bg-primary/10 p-3">
-                <h3 className="font-bold text-primary mb-2">📝 Examples</h3>
-                <div className="space-y-3 text-muted-foreground">
-                  <div>
-                    <div className="font-bold text-xs mb-1">Simple Walk:</div>
-                    <pre className="text-[10px] bg-black/60 p-2 rounded overflow-x-auto">
-{`bot:walkTo(50, 50)
-bot:talk("I'm here!")
-bot:sleep(1000)`}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="font-bold text-xs mb-1">Find & Break Block:</div>
-                    <pre className="text-[10px] bg-black/60 p-2 rounded overflow-x-auto">
-{`local pos = bot:findBlock(2, 100)
-if pos then
-  bot:walkTo(pos.x, pos.y)
-  bot:punchAt(pos.x, pos.y)
-end`}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="font-bold text-xs mb-1">Harvest Loop:</div>
-                    <pre className="text-[10px] bg-black/60 p-2 rounded overflow-x-auto">
-{`while true do
-  bot:harvestAll()
-  bot:collect()
-  bot:sleep(5000)
-end`}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="font-bold text-xs mb-1">Check Inventory:</div>
-                    <pre className="text-[10px] bg-black/60 p-2 rounded overflow-x-auto">
-{`if bot:hasItem(2, 10) then
-  bot:talk("I have 10+ dirt!")
-else
-  bot:talk("Need more dirt")
-end`}
-                    </pre>
-                  </div>
+                <div className="ml-auto text-xs font-mono px-3 py-1.5 rounded-lg border border-white/10 bg-white/5">
+                  Status: <span className={luaStatuses[activeSessionId]?.running ? "text-emerald-400" : "text-slate-400"}>
+                    {luaStatuses[activeSessionId]?.running ? "Running" : "Idle"}
+                  </span>
                 </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center">
+              <Card className="border-white/10 bg-card/50 ring-white/10 max-w-md w-full">
+                <CardContent className="px-4 py-8 text-center flex flex-col items-center gap-3">
+                  <Plug className="size-8 text-muted-foreground opacity-50" />
+                  <div className="text-sm text-muted-foreground">
+                    Please select an active bot session from the sidebar to edit its script.
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </div>
       ) : null}
       </div>
@@ -1982,10 +1671,10 @@ end`}
       </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="rounded-2xl border-border bg-card text-foreground backdrop-blur-xl">
+        <DialogContent className="rounded-2xl border-white/10 bg-card text-foreground">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Gear className="size-5 text-primary hydro-glow-sm" />
+              <Gear className="size-5 text-primary" />
               Dashboard Settings
             </DialogTitle>
             <DialogDescription>
@@ -1993,58 +1682,13 @@ end`}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-4">
-            {/* Code Account */}
-            <Button 
-              variant="ghost" 
-              className="justify-start rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all h-11"
-              onClick={() => {
-                setSettingsOpen(false)
-                // Navigate to login/code page by clearing auth
-                setDashboardStatus(prev => prev ? { ...prev, authenticated: false } : null)
-              }}
-            >
+            <Button variant="outline" className="justify-start border-white/10 bg-white/5 hover:bg-white/10">
               <Code className="size-4 mr-2" /> Code Account
             </Button>
-            {/* Load Bot */}
-            <Button 
-              variant="ghost" 
-              className="justify-start rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all h-11"
-              onClick={() => {
-                try {
-                  const saved = localStorage.getItem('hydro_bot_config')
-                  if (!saved) {
-                    setFeedback({ kind: 'error', message: 'No saved bot config found.' })
-                    return
-                  }
-                  const config = JSON.parse(saved) as { authKind?: string; deviceId?: string; jwt?: string; email?: string }
-                  if (config.authKind) setAuthKind(config.authKind as AuthKind)
-                  if (config.deviceId) setDeviceId(config.deviceId)
-                  if (config.jwt) setJwt(config.jwt)
-                  if (config.email) setEmail(config.email)
-                  setFeedback({ kind: 'success', message: 'Bot config loaded!' })
-                  setSettingsOpen(false)
-                } catch {
-                  setFeedback({ kind: 'error', message: 'Failed to load bot config.' })
-                }
-              }}
-            >
+            <Button variant="outline" className="justify-start border-white/10 bg-white/5 hover:bg-white/10">
               <Plug className="size-4 mr-2" /> Load Bot
             </Button>
-            {/* Save Bot */}
-            <Button 
-              variant="ghost" 
-              className="justify-start rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all h-11"
-              onClick={() => {
-                try {
-                  const config = { authKind, deviceId, jwt, email }
-                  localStorage.setItem('hydro_bot_config', JSON.stringify(config))
-                  setFeedback({ kind: 'success', message: 'Bot config saved!' })
-                  setSettingsOpen(false)
-                } catch {
-                  setFeedback({ kind: 'error', message: 'Failed to save bot config.' })
-                }
-              }}
-            >
+            <Button variant="outline" className="justify-start border-white/10 bg-white/5 hover:bg-white/10">
               <LockKey className="size-4 mr-2" /> Save Bot
             </Button>
             <div className="h-px bg-white/10 my-2" />

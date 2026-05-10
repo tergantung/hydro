@@ -1,8 +1,16 @@
 [package]
-name = "Moonlight"
+name = "Hydro"
 version = "0.1.0"
 edition = "2024"
 authors = ["Cendy"]
+
+[[bin]]
+name = "Hydro"
+path = "src/main.rs"
+
+[[bin]]
+name = "updater"
+path = "src/updater.rs"
 
 [dependencies]
 bson = { version = "3.1.0", features = ["serde_json-1"] }
@@ -21,6 +29,8 @@ dashmap = "6.1"
 parking_lot = "0.12"
 regex = "1"
 hex = "0.4.3"
+zip = "0.6"
+tempfile = "3.3"
 
 [profile.release]
 lto = "thin"
