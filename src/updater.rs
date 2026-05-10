@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use zip::ZipArchive;
 
-const API_URL: &str = "https://api.github.com/repos/tergantung/hydro-releases/releases/latest";
+const API_URL: &str = "https://api.github.com/repos/tergantung/hydro-rs/releases/latest";
 const CURRENT_VERSION: &str = "v0.1.0-beta";
 
 #[derive(serde::Deserialize, Debug)]
@@ -26,7 +26,7 @@ fn main() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to check updates: {}", e);
-            eprintln!("(Pastikan repository tergantung/hydro sudah di-set ke Public dan ada Release terbaru)");
+            eprintln!("(Pastikan repository tergantung/hydro-rs sudah di-set ke Public dan ada Release terbaru)");
             wait_for_input();
             return;
         }
