@@ -18,11 +18,18 @@ jobs:
     - name: Build Release
       run: cargo build --release
 
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: Hydro-Windows-Beta
-        path: |
-          target/release/Hydro.exe
-          target/release/updater.exe
-          block_types.json
+    - name: Create Zip Archive
+      run: |
+        Compress-Archive -Path target\release\Hydro.exe, target\release\updater.exe, block_types.json -DestinationPath Hydro-Windows-Beta.zip
+
+    # Release ke repo PUBLIC terpisah (source code tetap private)
+    - name: Delete existing release on public repo
+      run: gh release delete v0.1.0-beta --yes --cleanup-tag --repo tergantung/hydro-releases
+      env:
+        GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      continue-on-error: true
+
+    - name: Create release on public repo
+      run: gh release create v0.1.0-beta Hydro-Windows-Beta.zip --title "Hydro v0.1.0-beta" --notes "Hydro Auto-Updater Beta Release" --latest --repo tergantung/hydro-releases
+      env:
+        GH_TOKEN: ${{ secrets.RELEASE_PAT }}

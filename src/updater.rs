@@ -3,32 +3,39 @@ use std::io;
 use std::path::Path;
 use zip::ZipArchive;
 
-const CONFIG_URL: &str = "https://gist.githubusercontent.com/user/gist_id/raw/config.json";
-const CURRENT_VERSION: &str = "0.1.0-beta";
+const API_URL: &str = "https://api.github.com/repos/tergantung/hydro-releases/releases/latest";
+const CURRENT_VERSION: &str = "v0.1.0-beta";
 
 #[derive(serde::Deserialize, Debug)]
-struct RemoteConfig {
-    latest_version: String,
-    download_url: String,
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
 }
 
 fn main() {
     println!("=== Hydro Auto-Updater ===");
-    println!("Checking for updates...");
+    println!("Checking for updates from GitHub...");
 
-    let mut resp = match ureq::get(CONFIG_URL).call() {
+    let mut resp = match ureq::get(API_URL).set("User-Agent", "Hydro-Updater").call() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to check updates: {}", e);
+            eprintln!("(Pastikan repository tergantung/hydro sudah di-set ke Public dan ada Release terbaru)");
             wait_for_input();
             return;
         }
     };
 
-    let config: RemoteConfig = match resp.body_mut().read_json() {
+    let release: GithubRelease = match resp.body_mut().read_json() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to parse update config: {}", e);
+            eprintln!("Failed to parse GitHub release data: {}", e);
             wait_for_input();
             return;
         }
@@ -40,8 +47,8 @@ fn main() {
         Path::new("./Hydro").exists()
     };
 
-    if config.latest_version == CURRENT_VERSION && hydro_exists {
-        println!("Hydro is up to date (v{})", CURRENT_VERSION);
+    if release.tag_name == CURRENT_VERSION && hydro_exists {
+        println!("Hydro is up to date ({})", CURRENT_VERSION);
         launch_hydro();
         return;
     }
@@ -49,12 +56,22 @@ fn main() {
     if !hydro_exists {
         println!("Hydro not found. Starting initial installation...");
     } else {
-        println!("New version found: v{}", config.latest_version);
+        println!("New version found: {}", release.tag_name);
     }
     
-    println!("Downloading update from: {}", config.download_url);
+    // Find the zip asset
+    let asset = match release.assets.iter().find(|a| a.name.ends_with(".zip")) {
+        Some(a) => a,
+        None => {
+            eprintln!("No .zip update file found in the latest GitHub release!");
+            wait_for_input();
+            return;
+        }
+    };
 
-    let mut download_resp = match ureq::get(&config.download_url).call() {
+    println!("Downloading update from: {}", asset.browser_download_url);
+
+    let mut download_resp = match ureq::get(&asset.browser_download_url).set("User-Agent", "Hydro-Updater").call() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to download update: {}", e);

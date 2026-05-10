@@ -5,3 +5,5 @@ user.json
 *.bin
 *.log
 docs/superpowers/
+zig-bin/
+zig.tar.xz
