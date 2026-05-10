@@ -1,4 +1,4 @@
-export type AuthKind = "android_device" | "jwt" | "email_password"
+export type AuthKind = "android_device" | "jwt" | "email_password" | "none"
 
 export type AuthInput =
   | {

@@ -85,7 +85,7 @@ impl BotSession {
         self.id.clone()
     }
 
-    pub(super) async fn new(id: String, auth: AuthInput, logger: Logger) -> Arc<Self> {
+    pub(super) async fn new(id: String, auth: AuthInput, logger: Logger, proxy: Option<String>) -> Arc<Self> {
         let (controller_tx, controller_rx) = mpsc::channel(512);
         let device_id = auth.device_id();
         let state = Arc::new(RwLock::new(SessionState {
@@ -97,6 +97,7 @@ impl BotSession {
             },
             current_host: net::default_host(),
             current_port: net::default_port(),
+            proxy,
             current_world: None,
             pending_world: None,
             pending_world_is_instance: false,
@@ -110,6 +111,7 @@ impl BotSession {
             world_background_tiles: Vec::new(),
             world_water_tiles: Vec::new(),
             world_wiring_tiles: Vec::new(),
+            worn_items: std::collections::HashSet::new(),
             current_outbound_tx: None,
             growing_tiles: HashMap::new(),
             player_position: PlayerPosition {
@@ -164,6 +166,7 @@ impl BotSession {
             device_id: state.device_id.clone(),
             current_host: state.current_host.clone(),
             current_port: state.current_port,
+            proxy: state.proxy.clone(),
             current_world: state.current_world.clone(),
             pending_world: state.pending_world.clone(),
             username: state.username.clone(),
@@ -420,6 +423,16 @@ impl BotSession {
     pub async fn queue_stop_automine(&self) -> Result<String, String> {
         self.send_command(SessionCommand::StopAutomine).await?;
         Ok("automine stop queued".to_string())
+    }
+
+    pub async fn queue_start_autoclear(&self, world: String) -> Result<String, String> {
+        self.send_command(SessionCommand::StartAutoClear { world }).await?;
+        Ok("autoclear start queued".to_string())
+    }
+
+    pub async fn queue_stop_autoclear(&self) -> Result<String, String> {
+        self.send_command(SessionCommand::StopAutoClear).await?;
+        Ok("autoclear stop queued".to_string())
     }
 
     pub async fn queue_set_automine_speed(&self, multiplier: f32) -> Result<String, String> {
@@ -838,6 +851,7 @@ impl BotSession {
         let mut spam_stop_tx: Option<watch::Sender<bool>> = None;
         let mut fishing_stop_tx: Option<watch::Sender<bool>> = None;
         let mut automine_stop_tx: Option<watch::Sender<bool>> = None;
+        let mut autoclear_stop_tx: Option<watch::Sender<bool>> = None;
         let mut autonether_stop_tx: Option<watch::Sender<bool>> = None;
 
         while let Some(event) = rx.recv().await {
@@ -883,6 +897,7 @@ impl BotSession {
                         stop_background_worker(&mut spam_stop_tx);
                         stop_background_worker(&mut fishing_stop_tx);
                         stop_background_worker(&mut automine_stop_tx);
+                        stop_background_worker(&mut autoclear_stop_tx);
                         if let Some(active) = &runtime {
                             let _ =
                                 send_doc(&active.outbound_tx, protocol::make_leave_world()).await;
@@ -900,6 +915,7 @@ impl BotSession {
                         stop_background_worker(&mut spam_stop_tx);
                         stop_background_worker(&mut fishing_stop_tx);
                         stop_background_worker(&mut automine_stop_tx);
+                        stop_background_worker(&mut autoclear_stop_tx);
                         if let Some(active) = runtime.take() {
                             let _ = active.stop_tx.send(true);
                         }
@@ -1170,6 +1186,37 @@ impl BotSession {
                         stop_background_worker(&mut automine_stop_tx);
                         self.state.write().await.current_target = None;
                     }
+                    SessionCommand::StartAutoClear { world } => {
+                        stop_background_worker(&mut autoclear_stop_tx);
+                        let Some(active) = &runtime else {
+                            self.set_error("connect the session before starting autoclear".to_string()).await;
+                            continue;
+                        };
+                        let (stop_tx, stop_rx) = watch::channel(false);
+                        autoclear_stop_tx = Some(stop_tx);
+                        let outbound_tx = active.outbound_tx.clone();
+                        let state = self.state.clone();
+                        let logger = self.logger.clone();
+                        let session_id = self.id.clone();
+                        let controller_tx = self.controller_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = crate::session::autoclear::autoclear_loop(
+                                world,
+                                &session_id,
+                                &logger,
+                                &state,
+                                &outbound_tx,
+                                stop_rx,
+                                controller_tx,
+                            ).await {
+                                logger.error("autoclear", Some(&session_id), error);
+                            }
+                        });
+                    }
+                    SessionCommand::StopAutoClear => {
+                        stop_background_worker(&mut autoclear_stop_tx);
+                        self.state.write().await.current_target = None;
+                    }
                     SessionCommand::SetAutomineSpeed { multiplier } => {
                         let clamped = multiplier.clamp(0.4, 1.6);
                         self.state.write().await.automine_speed = clamped;
@@ -1285,8 +1332,9 @@ impl BotSession {
         host_override: Option<String>,
     ) -> Result<ActiveRuntime, String> {
         self.update_status(SessionStatus::Connecting, None).await;
+        let proxy = self.state.read().await.proxy.clone();
         let resolved =
-            auth::resolve_auth(self.auth.clone(), self.logger.clone(), self.id.clone()).await?;
+            auth::resolve_auth(self.auth.clone(), self.logger.clone(), self.id.clone(), proxy).await?;
         {
             let mut state = self.state.write().await;
             state.device_id = resolved.device_id.clone();
@@ -1481,6 +1529,12 @@ impl BotSession {
             ids::PACKET_ID_INVENTORY_UPDATE => {
                 self.apply_inventory_update(&message).await;
             }
+            ids::PACKET_ID_WEAR_ITEM => {
+                self.apply_wear_update(&message, true).await;
+            }
+            ids::PACKET_ID_UNWEAR_ITEM => {
+                self.apply_wear_update(&message, false).await;
+            }
             ids::PACKET_ID_FISHING_GAME_ACTION => {
                 self.apply_fishing_message(&message, &runtime.outbound_tx).await;
             }
@@ -1518,20 +1572,21 @@ impl BotSession {
                     let mut retry_triggered = false;
                     if jr == 8 {
                         // JR: 8 is "Server Full". Trigger a shard-hopping retry.
-                        let (world, retry_count) = {
+                        let (world, is_instance, retry_count) = {
                             let mut state = self.state.write().await;
                             state.serverfull_retries = state.serverfull_retries.saturating_add(1);
-                            (state.pending_world.clone(), state.serverfull_retries)
+                            let world = state.pending_world.clone().or_else(|| state.current_world.clone());
+                            (world, state.pending_world_is_instance, state.serverfull_retries)
                         };
 
-                        const SERVERFULL_RETRY_LIMIT: u32 = 30;
+                        const SERVERFULL_RETRY_LIMIT: u32 = 60;
                         if retry_count <= SERVERFULL_RETRY_LIMIT {
                             if let Some(world) = world {
                                 self.logger.info("session", Some(&self.id), 
-                                    format!("JR: 8 (Server Full) detected. Manually retrying shard #{retry_count} for {world}"));
+                                    format!("JR: 8 (Server Full) detected. Manually retrying shard #{retry_count} for {world} (is_instance={is_instance})"));
                                 let _ = send_doc(
                                     &runtime.outbound_tx,
-                                    protocol::make_join_world_retry(&world, retry_count as i32),
+                                    protocol::make_join_world_retry(&world, retry_count as i32, is_instance),
                                 ).await;
                                 retry_triggered = true;
                             }
@@ -1727,7 +1782,7 @@ impl BotSession {
                 }
             }
             ids::PACKET_ID_REDIRECT => {
-                const SERVERFULL_RETRY_LIMIT: u32 = 30;
+                const SERVERFULL_RETRY_LIMIT: u32 = 60;
 
                 let redirect_host = message.get_str("IP").unwrap_or_default().to_string();
                 let er = message.get_str("ER").ok().map(ToOwned::to_owned);
@@ -1778,10 +1833,10 @@ impl BotSession {
                         // for a different shard. establish_connection already replayed
                         // the VChk + GPd handshake on the new socket.
                         self.logger.info("session", Some(&self.id),
-                            format!("OoIP ServerFull retry #{retry_count} for {world}"));
+                            format!("OoIP ServerFull retry #{retry_count} for {world} (is_instance={is_instance})"));
                         let _ = send_doc(
                             &runtime.outbound_tx,
-                            protocol::make_join_world_retry(&world, retry_count as i32),
+                            protocol::make_join_world_retry(&world, retry_count as i32, is_instance),
                         )
                         .await;
                     } else if is_instance {
@@ -2145,6 +2200,11 @@ impl BotSession {
 
         let mut state = self.state.write().await;
         if amount == 0 {
+            // Remove from worn_items if the item was equipped (e.g. pickaxe broke)
+            if state.worn_items.remove(&block_id) {
+                self.logger.warn("session", Some(&self.id), 
+                    format!("Item {} broke/removed — auto-cleared from worn_items", block_id));
+            }
             state.inventory.retain(|e| e.inventory_key != inventory_key);
         } else {
             if let Some(entry) = state.inventory.iter_mut().find(|e| e.inventory_key == inventory_key) {
@@ -2164,6 +2224,32 @@ impl BotSession {
         }
         drop(state);
         self.publish_snapshot().await;
+    }
+
+    async fn apply_wear_update(&self, message: &Document, is_wearing: bool) {
+        let (my_uid, my_username) = {
+            let st = self.state.read().await;
+            (st.user_id.clone(), st.username.clone())
+        };
+
+        let target_uid = message.get_str("U").ok().map(|s| s.to_string());
+        let target_name = message.get_str("UN").ok().map(|s| s.to_string());
+
+        let is_me = (my_uid.is_some() && my_uid == target_uid) 
+                 || (my_username.is_some() && my_username == target_name);
+
+        if is_me {
+            if let Ok(block_id) = message.get_i32("hBlock") {
+                let mut st = self.state.write().await;
+                if is_wearing {
+                    st.worn_items.insert(block_id as u16);
+                } else {
+                    st.worn_items.remove(&(block_id as u16));
+                }
+                self.logger.info("session", Some(&self.id), 
+                    format!("Worn state updated: {} block_id={}", if is_wearing { "EQUIPPED" } else { "REMOVED" }, block_id));
+            }
+        }
     }
 
     async fn track_collectable(&self, message: &Document, is_nwc: bool) {

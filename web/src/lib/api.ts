@@ -101,10 +101,10 @@ export function logoutDashboard() {
   })
 }
 
-export function connectWithAuth(auth: AuthInput) {
+export function connectWithAuth(auth: AuthInput, proxy?: string) {
   return request<ActionResponse>("/api/connect", {
     method: "POST",
-    body: JSON.stringify({ auth }),
+    body: JSON.stringify({ auth, proxy }),
   })
 }
 
@@ -209,6 +209,19 @@ export function startAutomine(sessionId: string) {
 
 export function stopAutomine(sessionId: string) {
   return request<ActionResponse>(`/api/sessions/${sessionId}/automine/stop`, {
+    method: "POST",
+  })
+}
+
+export function startAutoclear(sessionId: string, world: string) {
+  return request<ActionResponse>(`/api/sessions/${sessionId}/autoclear/start`, {
+    method: "POST",
+    body: JSON.stringify({ world }),
+  })
+}
+
+export function stopAutoclear(sessionId: string) {
+  return request<ActionResponse>(`/api/sessions/${sessionId}/autoclear/stop`, {
     method: "POST",
   })
 }

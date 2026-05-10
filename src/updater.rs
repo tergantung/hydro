@@ -22,7 +22,10 @@ fn main() {
     println!("=== Hydro Auto-Updater ===");
     println!("Checking for updates from GitHub...");
 
-    let mut resp = match ureq::get(API_URL).set("User-Agent", "Hydro-Updater").call() {
+    let mut resp = match ureq::get(API_URL)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .header("Accept", "application/vnd.github.v3+json")
+        .call() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to check updates: {}", e);
@@ -71,7 +74,10 @@ fn main() {
 
     println!("Downloading update from: {}", asset.browser_download_url);
 
-    let mut download_resp = match ureq::get(&asset.browser_download_url).set("User-Agent", "Hydro-Updater").call() {
+    let mut download_resp = match ureq::get(&asset.browser_download_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .header("Accept", "application/octet-stream")
+        .call() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to download update: {}", e);

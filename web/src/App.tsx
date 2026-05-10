@@ -15,6 +15,8 @@ import {
   Code,
   LockKey,
   Robot,
+  Globe,
+  ShieldCheck,
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
@@ -65,10 +67,12 @@ import {
   getLuaScriptStatus,
   reconnectSession,
   startAutomine,
+  stopAutomine,
+  startAutoclear,
+  stopAutoclear,
   startFishing,
   startLuaScript,
   startSpam,
-  stopAutomine,
   stopLuaScript,
   stopFishing,
   stopSpam,
@@ -110,6 +114,7 @@ type Feedback = {
 
 type SessionInputs = {
   world: string
+  autoclearWorld: string
   bait: string
   chat: string
   luaSource: string
@@ -119,6 +124,7 @@ type SessionInputs = {
 
 const EMPTY_INPUTS: SessionInputs = {
   world: "",
+  autoclearWorld: "",
   bait: "",
   chat: "",
   luaSource: "",
@@ -132,11 +138,12 @@ const CLOTHING_TYPES = new Set([768, 1024])
 
 
 function App() {
-  const [authKind, setAuthKind] = useState<AuthKind>("android_device")
+  const [authKind, setAuthKind] = useState<AuthKind>("none")
   const [deviceId, setDeviceId] = useState("")
   const [jwt, setJwt] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [proxy, setProxy] = useState("")
   const [dashboardPassword, setDashboardPassword] = useState("")
   const [dashboardCode, setDashboardCode] = useState<string | null>(null)
   const [countdown, setCountdown] = useState<number | null>(null)
@@ -518,7 +525,7 @@ function App() {
   const handleConnect = async () => {
     setConnecting(true)
     try {
-      const response = await connectWithAuth(createAuthInput)
+      const response = await connectWithAuth(createAuthInput, proxy || undefined)
       updateFromAction(response)
     } catch (error) {
       setFeedback({
@@ -894,18 +901,19 @@ function App() {
                   onValueChange={(value) => setAuthKind(value as AuthKind)}
                 >
                   <SelectTrigger className="w-full rounded-lg border-border bg-black/60 h-8 text-xs focus:ring-primary/30 hydro-border-glow">
-                    <SelectValue />
+                    <SelectValue placeholder="Select Auth Method" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="android_device" disabled>Android Device [Maintenance]</SelectItem>
-                    <SelectItem value="jwt">JWT</SelectItem>
+                    <SelectItem value="jwt">JWT Token</SelectItem>
                     <SelectItem value="email_password">Email + Password</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              <div>
-                <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Device ID</label>
+              {authKind !== "none" && (
+                <>
+                <div>
+                  <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Device ID</label>
                 <div className="flex gap-2">
                   <Input
                     value={deviceId}
@@ -921,6 +929,22 @@ function App() {
                   >
                     Gen
                   </Button>
+                </div>
+
+                <div className="mt-3">
+                  <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wider">Proxy / SOCKS5</label>
+                  <div className="relative">
+                    <Input
+                      value={proxy}
+                      onChange={(event) => setProxy(event.target.value)}
+                      placeholder="http://user:pass@host:port"
+                      className="rounded-lg border-border bg-black/60 h-9 text-xs focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all pl-8"
+                    />
+                    <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-primary/60" />
+                  </div>
+                  <p className="text-[9px] text-muted-foreground/60 italic mt-1">
+                    Supports HTTP, HTTPS, and SOCKS5 (socks5://...)
+                  </p>
                 </div>
               </div>
 
@@ -977,6 +1001,8 @@ function App() {
                   </>
                 )}
               </Button>
+              </>
+              )}
 
               {feedback ? (
                 <div
@@ -1093,8 +1119,12 @@ function App() {
                   <div className="p-3 bg-primary/20 rounded-2xl border border-primary/30 shadow-[0_0_20px_rgba(var(--primary),0.3)]">
                     <Moon className="size-8 text-primary" />
                   </div>
-                  <h1 className="text-4xl font-extrabold tracking-tight text-white drop-shadow-md">
+                  <h1 className="text-4xl font-extrabold tracking-tight text-white drop-shadow-md flex items-center gap-3">
                     Hydro <span className="text-primary drop-shadow-[0_0_10px_rgba(var(--primary),0.5)]">Dashboard</span>
+                    <div className="flex gap-1 ml-2">
+                      <ShieldCheck className="size-5 text-emerald-400/80 drop-shadow-[0_0_8px_rgba(52,211,153,0.4)]" />
+                      <Globe className="size-5 text-sky-400/80 drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]" />
+                    </div>
                   </h1>
                 </div>
                 <p className="text-base text-white/70 max-w-xl leading-relaxed">
@@ -1326,6 +1356,41 @@ function App() {
                                     onClick={() => void runAction(() => stopAutomine(session.id))}
                                   >
                                     Disengage
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {/* Auto Clear */}
+                              <div className="grid gap-3 rounded-2xl glass-dark p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                  <Moon className="size-3.5" />
+                                  Auto Clear World
+                                </div>
+                                <div className="text-xs text-muted-foreground mb-2">
+                                  Automatically clears the specified world top-down using pathfinding and smart mining logic.
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                                  <Input
+                                    value={inputs.autoclearWorld}
+                                    onChange={(event) =>
+                                      mutateSessionInput(session.id, "autoclearWorld", event.target.value)
+                                    }
+                                    placeholder="World to clear"
+                                    className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
+                                  />
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold hover:bg-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]"
+                                    onClick={() => void runAction(() => startAutoclear(session.id, inputs.autoclearWorld))}
+                                  >
+                                    Start Clear
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-300 font-bold hover:bg-rose-500/20 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]"
+                                    onClick={() => void runAction(() => stopAutoclear(session.id))}
+                                  >
+                                    Stop
                                   </Button>
                                 </div>
                               </div>

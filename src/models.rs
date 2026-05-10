@@ -199,6 +199,7 @@ pub struct SessionSnapshot {
     pub device_id: String,
     pub current_host: String,
     pub current_port: u16,
+    pub proxy: Option<String>,
     pub current_world: Option<String>,
     pub pending_world: Option<String>,
     pub username: Option<String>,
@@ -257,6 +258,7 @@ pub struct TutorialCompletedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub auth: AuthInput,
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

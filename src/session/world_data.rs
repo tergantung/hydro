@@ -323,6 +323,7 @@ pub(super) async fn publish_state_snapshot(
             device_id: state.device_id.clone(),
             current_host: state.current_host.clone(),
             current_port: state.current_port,
+            proxy: state.proxy.clone(),
             current_world: state.current_world.clone(),
             pending_world: state.pending_world.clone(),
             username: state.username.clone(),

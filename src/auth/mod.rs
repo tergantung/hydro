@@ -14,6 +14,7 @@ pub async fn resolve_auth(
     auth: AuthInput,
     logger: Logger,
     session_id: String,
+    proxy: Option<String>,
 ) -> Result<ResolvedAuth, String> {
     match auth {
         AuthInput::Jwt { jwt, device_id } => Ok(ResolvedAuth {
@@ -23,9 +24,9 @@ pub async fn resolve_auth(
         AuthInput::AndroidDevice { device_id } => {
             let device_id = normalize_or_generate_device_id(device_id);
             let ticket =
-                playfab_android_login(device_id.clone(), logger.clone(), session_id.clone())
+                playfab_android_login(device_id.clone(), logger.clone(), session_id.clone(), proxy.clone())
                     .await?;
-            let jwt = exchange_ticket(ticket, logger, session_id).await?;
+            let jwt = exchange_ticket(ticket, logger, session_id, proxy).await?;
             Ok(ResolvedAuth { jwt, device_id })
         }
         AuthInput::EmailPassword {
@@ -35,8 +36,8 @@ pub async fn resolve_auth(
         } => {
             let device_id = device_id.unwrap_or_else(|| network::DEFAULT_DEVICE_ID.to_string());
             let ticket =
-                playfab_email_login(email, password, logger.clone(), session_id.clone()).await?;
-            let jwt = exchange_ticket(ticket, logger, session_id).await?;
+                playfab_email_login(email, password, logger.clone(), session_id.clone(), proxy.clone()).await?;
+            let jwt = exchange_ticket(ticket, logger, session_id, proxy).await?;
             Ok(ResolvedAuth { jwt, device_id })
         }
     }
@@ -46,6 +47,7 @@ async fn playfab_android_login(
     device_id: String,
     logger: Logger,
     session_id: String,
+    proxy: Option<String>,
 ) -> Result<String, String> {
     let body = json!({
         "AndroidDeviceId": device_id,
@@ -58,6 +60,7 @@ async fn playfab_android_login(
         Vec::new(),
         logger,
         session_id,
+        proxy,
     )
     .await?;
     extract_ticket(json)
@@ -68,6 +71,7 @@ async fn playfab_email_login(
     password: String,
     logger: Logger,
     session_id: String,
+    proxy: Option<String>,
 ) -> Result<String, String> {
     let body = json!({
         "Email": email,
@@ -80,6 +84,7 @@ async fn playfab_email_login(
         Vec::new(),
         logger,
         session_id,
+        proxy,
     )
     .await?;
     extract_ticket(json)
@@ -89,6 +94,7 @@ async fn exchange_ticket(
     session_ticket: String,
     logger: Logger,
     session_id: String,
+    proxy: Option<String>,
 ) -> Result<String, String> {
     let json = post_json(
         network::SOCIALFIRST_EXCHANGE_URL,
@@ -102,9 +108,18 @@ async fn exchange_ticket(
                 "X-Unity-Version".to_string(),
                 network::UNITY_VERSION.to_string(),
             ),
+            (
+                "X-Sf-Client-Version".to_string(),
+                "1.0.0".to_string(),
+            ),
+            (
+                "X-Sf-Client-Platform".to_string(),
+                "WindowsPlayer".to_string(),
+            ),
         ],
         logger,
         session_id,
+        proxy,
     )
     .await?;
 
@@ -120,6 +135,7 @@ async fn post_json(
     headers: Vec<(String, String)>,
     logger: Logger,
     session_id: String,
+    proxy: Option<String>,
 ) -> Result<Value, String> {
     logger.transport(
         TransportKind::Http,
@@ -130,12 +146,29 @@ async fn post_json(
     );
 
     tokio::task::spawn_blocking(move || {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(timing::http_timeout()))
-            .build()
-            .into();
+        let mut config = ureq::Agent::config_builder()
+            .timeout_global(Some(timing::http_timeout()));
+        
+        if let Some(proxy_url) = proxy {
+            let normalized = normalize_proxy_url(&proxy_url);
+            config = config.proxy(Some(ureq::Proxy::new(&normalized).map_err(|e| e.to_string())?));
+        }
 
-        let mut request = agent.post(url).header("Content-Type", "application/json");
+        let agent: ureq::Agent = config.build().into();
+
+        let mut request = agent.post(url)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("User-Agent", format!("UnityPlayer/{} (UnityWins/64)", network::UNITY_VERSION))
+            .header("X-Unity-Version", network::UNITY_VERSION)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Encoding", "gzip, br")
+            .header("Connection", "keep-alive")
+            .header("DNT", "1")
+            .header("X-Requested-With", "com.socialfirst.pixelworlds")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "cross-site");
         for (key, value) in headers {
             request = request.header(&key, &value);
         }
@@ -189,4 +222,32 @@ fn generate_device_id() -> String {
         let _ = write!(&mut output, "{byte:02x}");
     }
     output
+}
+
+fn normalize_proxy_url(input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return String::new();
+    }
+
+    if input.starts_with("http://") || input.starts_with("https://") || input.starts_with("socks5://") || input.starts_with("socks4://") {
+        return input.to_string();
+    }
+
+    // Try parsing host:port:user:pass
+    let parts: Vec<&str> = input.split(':').collect();
+    if parts.len() == 4 {
+        let host = parts[0];
+        let port = parts[1];
+        let user = parts[2];
+        let pass = parts[3];
+        return format!("http://{user}:{pass}@{host}:{port}");
+    }
+
+    // Try host:port
+    if parts.len() == 2 {
+        return format!("http://{}", input);
+    }
+
+    input.to_string()
 }

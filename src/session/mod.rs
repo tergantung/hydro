@@ -41,6 +41,7 @@ mod movement;
 mod network;
 mod state;
 mod tutorial;
+pub mod autoclear;
 mod world_data;
 pub use bot_session::BotSession;
 pub use manager::SessionManager;

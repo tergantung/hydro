@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use rand::RngExt;
+// Removed unused rand imports
 
 use tokio::sync::{mpsc, watch, RwLock};
 
@@ -40,6 +40,14 @@ pub fn find_best_bot_target(
     // Collectibles (items on the floor) and gemstones (blocks in walls) are
     // ranked equally — nearest reachable target wins.
     for (&id, state) in collectables {
+        // Skip collectables that are inside a foreground block (prevent ban)
+        let index = (state.map_y as u32 * world_width + state.map_x as u32) as usize;
+        if let Some(&fg) = foreground_tiles.get(index) {
+            if fg != 0 {
+                continue;
+            }
+        }
+
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
@@ -165,26 +173,30 @@ pub(super) async fn automine_loop(
     _controller_tx: mpsc::Sender<ControllerEvent>,
 ) -> Result<(), String> {
     let mut last_tick = Instant::now();
-    let mut equipped_pickaxe: Option<u16> = None;
-
-    const MAX_TILE_ATTEMPTS: u32 = 12;
-    let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
+    let mut world_entered_at: Option<Instant> = None;
+    let mut last_equip_attempt: Option<Instant> = None;
+
+    const MAX_TILE_ATTEMPTS: u32 = 30;
+    let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
 
     loop {
-        let (ping, speed_mult) = {
+        let (ping, speed_mult, currently_worn_pickaxe, inventory) = {
             let st = state.read().await;
-            (st.ping_ms.unwrap_or(0), st.automine_speed.clamp(0.4, 1.6))
+            // Find which pickaxe (if any) is currently worn
+            let worn = st.worn_items.iter()
+                .find(|&&id| PICKAXE_PRIORITY.contains(&id))
+                .copied();
+            (st.ping_ms.unwrap_or(0), st.automine_speed.clamp(0.4, 1.6), worn, st.inventory.clone())
         };
 
         // Anti-speed-hack timing with speed multiplier
-        // Base delay scale is shifted to match the user's preferred 850ms baseline
-        let base_delay = (850.0 / speed_mult) as u64;
+        // Base delay scale is shifted to match the user's preferred 900ms baseline
+        let base_delay = (900.0 / speed_mult) as u64;
         let dynamic_delay = {
-            let mut rng = rand::rng();
-            let jitter = rng.random_range(0..(350.0 / speed_mult) as u64);
-            let thinking_pause = if rng.random_bool(0.05) { (500.0 / speed_mult) as u64 } else { 0 };
+            let jitter = rand::random_range(0..(350.0 / speed_mult) as u64);
+            let thinking_pause = if rand::random_bool(0.05) { (500.0 / speed_mult) as u64 } else { 0 };
 
             if ping > 150 {
                 base_delay + (ping as u64 - 100) + jitter + thinking_pause
@@ -267,20 +279,46 @@ pub(super) async fn automine_loop(
                     continue;
                 }
 
-                if equipped_pickaxe.is_none() {
-                    if let Some(pickaxe_id) = find_best_pickaxe(&inventory) {
-                        let _ = send_doc(outbound_tx, protocol::make_wear_item(pickaxe_id as i32)).await;
-                        equipped_pickaxe = Some(pickaxe_id);
-                    } else {
-                        _logger.warn("automine", Some(_session_id),
-                            "no pickaxe in inventory — HB packets will be ignored by the server");
+                // Auto-equip the best pickaxe, upgrading if a better one is available.
+                if !inventory.is_empty() {
+                    let can_equip = match world_entered_at {
+                        Some(t) => t.elapsed() > Duration::from_secs(2),
+                        None => true,
+                    } && match last_equip_attempt {
+                        Some(t) => t.elapsed() > Duration::from_secs(5),
+                        None => true,
+                    };
+
+                    if can_equip {
+                        if let Some(best_id) = find_best_pickaxe(&inventory) {
+                            let needs_equip = match currently_worn_pickaxe {
+                                Some(worn_id) => worn_id != best_id,
+                                None => true,
+                            };
+                            if needs_equip {
+                                // Unequip old pickaxe first if wearing a different one
+                                if let Some(old_id) = currently_worn_pickaxe {
+                                    _logger.info("automine", Some(_session_id),
+                                        format!("Unequipping inferior pickaxe: {} -> upgrading to {}", old_id, best_id));
+                                    let _ = send_doc(outbound_tx, protocol::make_unwear_item(old_id as i32)).await;
+                                    tokio::time::sleep(Duration::from_millis(300)).await;
+                                }
+                                _logger.info("automine", Some(_session_id), format!("Equipping best pickaxe: {}", best_id));
+                                let _ = send_doc(outbound_tx, protocol::make_wear_item(best_id as i32)).await;
+                                last_equip_attempt = Some(Instant::now());
+                            }
+                        } else if currently_worn_pickaxe.is_none() {
+                            _logger.warn("automine", Some(_session_id),
+                                "no pickaxe in inventory — HB packets will be ignored by the server");
+                            last_equip_attempt = Some(Instant::now()); // Throttles warning
+                        }
                     }
                 }
 
                 if current_world_name != current_world {
                     tile_attempts.clear();
-                    equipped_pickaxe = None;
                     current_world_name = current_world.clone();
+                    world_entered_at = Some(Instant::now());
                 }
 
                 tile_attempts.retain(|&(x, y), _| {
@@ -368,6 +406,17 @@ pub(super) async fn automine_loop(
                     }
                 }
 
+                // Safety check: verify equipped pickaxe still exists in inventory before mining.
+                // This prevents code=3 kicks when the pickaxe breaks between ticks.
+                let pickaxe_valid = match currently_worn_pickaxe {
+                    Some(worn_id) => inventory.iter().any(|e| e.block_id == worn_id && e.amount > 0),
+                    None => false,
+                };
+                if !pickaxe_valid {
+                    // No valid pickaxe — skip mining this tick, auto-equip will handle it next loop
+                    continue;
+                }
+
                 let mut hit_this_tick: Option<(i32, i32)> = None;
                 let mut target: Option<(BotTarget, Vec<(i32, i32)>)> = None;
                 
@@ -375,7 +424,10 @@ pub(super) async fn automine_loop(
                     let still_exists = {
                         let st = state.read().await;
                         match st_target {
-                            BotTarget::Collecting { id, .. } => st.collectables.contains_key(&id),
+                            BotTarget::Collecting { id, x, y, .. } => {
+                                let index = (y as u32 * world_width + x as u32) as usize;
+                                st.collectables.contains_key(&id) && foreground.get(index).copied().unwrap_or(0) == 0
+                            }
                             BotTarget::Mining { x, y } => {
                                 let idx = (y as u32 * world_width + x as u32) as usize;
                                 foreground.get(idx).copied().unwrap_or(0) != 0
@@ -574,8 +626,8 @@ pub(super) async fn automine_loop(
 
                 if let Some((hx, hy)) = hit_this_tick {
                     let attempts = tile_attempts.entry((hx, hy)).or_insert(0);
-                    *attempts += 3; 
-                    if *attempts == MAX_TILE_ATTEMPTS {
+                    *attempts += 2; 
+                    if *attempts >= MAX_TILE_ATTEMPTS {
                         _logger.warn("automine", Some(_session_id),
                             format!("dead-end: tile ({},{}) did not break in {} retries", hx, hy, MAX_TILE_ATTEMPTS));
                     }

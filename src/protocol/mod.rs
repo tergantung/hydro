@@ -247,13 +247,17 @@ pub fn make_join_world_special(world: &str, biome: i32) -> Document {
 /// TTjW retry variant for `OoIP { ER: "ServerFull" }` responses. The server
 /// uses the `Amt` field as a shard hint — each retry asks for a different
 /// instance until one has free slots.
-pub fn make_join_world_retry(world: &str, retry_count: i32) -> Document {
-    doc! {
+pub fn make_join_world_retry(world: &str, retry_count: i32, is_instance: bool) -> Document {
+    let mut doc = doc! {
         "ID": ids::PACKET_ID_JOIN_WORLD,
         "W": world.to_uppercase(),
         "WB": 0,
         "Amt": retry_count,
+    };
+    if is_instance {
+        doc.insert("Is", true);
     }
+    doc
 }
 
 pub fn make_world_load_args(args: &[i32]) -> Document {
@@ -380,9 +384,7 @@ pub fn make_mine_move_and_hit(
         make_map_point(move_x, move_y),
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
         
-        // 2. Rapid-fire hits with map-point verification
-        make_hit_block(hit_x, hit_y),
-        make_map_point(move_x, move_y),
+        // 2. Hits with map-point verification
         make_hit_block(hit_x, hit_y),
         make_map_point(move_x, move_y),
         make_hit_block(hit_x, hit_y),
@@ -401,8 +403,7 @@ pub fn make_mine_hit_stationary(
     vec![
         // Start swing
         make_movement_packet(world_x, world_y, movement::ANIM_HIT, direction, false),
-        // Triple hit
-        make_hit_block(hit_x, hit_y),
+        // Double hit
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
         // Sync

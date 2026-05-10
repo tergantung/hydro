@@ -85,7 +85,11 @@ impl AppState {
         let m_cloned = maintenance.clone();
         tokio::spawn(async move {
             loop {
-                if let Ok(mut resp) = ureq::get(CONFIG_URL).call() {
+                if let Ok(mut resp) = ureq::get(CONFIG_URL)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "application/json")
+                    .call() 
+                {
                     if let Ok(config) = resp.body_mut().read_json::<RemoteConfig>() {
                         let mut lock = m_cloned.write().await;
                         *lock = Some(config);
@@ -144,6 +148,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/automine/start", post(start_automine))
         .route("/api/sessions/{id}/automine/stop", post(stop_automine))
         .route("/api/sessions/{id}/automine/speed", post(set_automine_speed))
+        .route("/api/sessions/{id}/autoclear/start", post(start_autoclear))
+        .route("/api/sessions/{id}/autoclear/stop", post(stop_autoclear))
         .route("/api/sessions/{id}/autonether/start", post(start_autonether))
         .route("/api/sessions/{id}/autonether/stop", post(stop_autonether))
         .route("/api/sessions/{id}/autonether/status", get(get_autonether_status))
@@ -357,7 +363,7 @@ async fn connect_with_auth(
     State(state): State<AppState>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = state.session_manager.create_session(request.auth).await;
+    let session = state.session_manager.create_session(request.auth, request.proxy).await;
     session.connect().await.map_err(ApiError::bad_request)?;
     Ok(Json(json!({
         "result": ApiMessage { ok: true, message: "session created and connect queued".to_string() },
@@ -785,6 +791,50 @@ async fn stop_automine(
         .ok_or_else(|| ApiError::not_found("session not found"))?;
     let message = session
         .queue_stop_automine()
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "result": ApiMessage { ok: true, message },
+        "session": session.snapshot().await
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct AutoClearRequest {
+    world: String,
+}
+
+async fn start_autoclear(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<AutoClearRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let message = session
+        .queue_start_autoclear(request.world)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!({
+        "result": ApiMessage { ok: true, message },
+        "session": session.snapshot().await
+    })))
+}
+
+async fn stop_autoclear(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = state
+        .session_manager
+        .get_session(&id)
+        .await
+        .ok_or_else(|| ApiError::not_found("session not found"))?;
+    let message = session
+        .queue_stop_autoclear()
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(json!({

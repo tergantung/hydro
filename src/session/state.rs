@@ -489,6 +489,7 @@ pub(super) struct SessionState {
     pub(super) device_id: String,
     pub(super) current_host: String,
     pub(super) current_port: u16,
+    pub(super) proxy: Option<String>,
     pub(super) current_world: Option<String>,
     pub(super) pending_world: Option<String>,
     pub(super) pending_world_is_instance: bool,
@@ -515,6 +516,7 @@ pub(super) struct SessionState {
     pub(super) other_players: HashMap<String, PlayerPosition>,
     pub(super) ai_enemies: HashMap<i32, AiEnemyState>,
     pub(super) inventory: Vec<InventoryEntry>,
+    pub(super) worn_items: std::collections::HashSet<u16>,
     pub(super) collectables: HashMap<i32, CollectableState>,
     pub(super) current_direction: i32,
     pub(super) last_error: Option<String>,
@@ -583,6 +585,8 @@ pub(super) enum SessionCommand {
     StartAutomine,
     StopAutomine,
     SetAutomineSpeed { multiplier: f32 },
+    StartAutoClear { world: String },
+    StopAutoClear,
 }
 
 #[derive(Debug)]

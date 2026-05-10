@@ -28,12 +28,12 @@ impl SessionManager {
         }
     }
 
-    pub async fn create_session(&self, auth: AuthInput) -> Arc<BotSession> {
+    pub async fn create_session(&self, auth: AuthInput, proxy: Option<String>) -> Arc<BotSession> {
         let id = format!(
             "session-{}",
             SESSION_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
         );
-        let session = BotSession::new(id.clone(), auth, self.logger.clone()).await;
+        let session = BotSession::new(id.clone(), auth, self.logger.clone(), proxy).await;
         self.sessions.insert(id, session.clone());
         session
     }
