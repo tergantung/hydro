@@ -733,6 +733,59 @@ pub fn make_world_action_mine(level: i32) -> Document {
     }
 }
 
+// === Mining actions (mirroring automine.lua) ====================================
+// All four packets share the shape: { "ID":"A", "mG":<name>, "mP":<payload> }
+// where `mP` is a packed inventory key (inv_type << 24 | block_id) or, for
+// `RecycleMiningGemstone`, a sub-document `{ iK, a }`.
+// Source: OutgoingMessages.{MiningPickaxeRepairing, RecycleMiningGemstone,
+// CraftMiningGear, CraftMiningPickaxeUpgrade} in il2cpp dump.cs.
+
+/// Inventory-type ids observed in the dumped `OutgoingMessages` and used by
+/// the Lua reference bot when packing `mP` payloads.
+pub const INV_TYPE_WEAPON_PICKAXES: i32 = 49;
+pub const INV_TYPE_CONSUMABLE_REPAIR: i32 = 35;
+
+/// Pack an inventory key the way the action packets expect:
+/// `inv_type << 24 | block_id`. Matches Lua's `pack_ik24`.
+pub fn pack_inventory_key_24(inventory_type: i32, block_id: i32) -> i32 {
+    (inventory_type << 24) | (block_id & 0x00FF_FFFF)
+}
+
+pub fn make_mining_pickaxe_repair(packed_ik: i32) -> Document {
+    doc! {
+        "ID": "A",
+        "mG": "MiningPickaxeRepairing",
+        "mP": packed_ik,
+    }
+}
+
+pub fn make_recycle_mining_gemstone(packed_ik: i32, amount: i32) -> Document {
+    doc! {
+        "ID": "A",
+        "mG": "RecycleMiningGemstone",
+        "mP": {
+            "iK": packed_ik,
+            "a": amount,
+        },
+    }
+}
+
+pub fn make_craft_mining_gear(packed_ik: i32) -> Document {
+    doc! {
+        "ID": "A",
+        "mG": "CraftMiningGear",
+        "mP": packed_ik,
+    }
+}
+
+pub fn make_craft_mining_pickaxe_upgrade(packed_ik: i32) -> Document {
+    doc! {
+        "ID": "A",
+        "mG": "CraftMiningPickaxeUpgrade",
+        "mP": packed_ik,
+    }
+}
+
 pub fn make_world_chat(message: &str) -> Document {
     doc! {
         "ID": ids::PACKET_ID_WORLD_CHAT,

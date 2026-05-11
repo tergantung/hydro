@@ -538,6 +538,36 @@ pub(super) struct SessionState {
     /// lower values = slower (safer), higher values = faster (riskier).
     /// Clamped to [0.4, 1.6] in the loop. Default: 1.0.
     pub(super) automine_speed: f32,
+
+    // === Automine telemetry (mirrors automine.lua) ===============================
+    /// Latest durability value from `AnP.D` for our own player. `None` when the
+    /// server has not announced our equipped pickaxe yet.
+    pub(super) automine_pickaxe_durability: Option<i32>,
+    /// User id of an admin that entered the current mining world, if any.
+    /// The automine loop watches this and exits the world when set.
+    pub(super) automine_admin_in_world: Option<String>,
+    /// Number of `KErr ER=8` (pickaxe broken) we have observed since last
+    /// successful repair / equip. Used by the 3-strike fatal-exit logic.
+    pub(super) automine_pickaxe_broken_count: u32,
+    /// `DB` packet timestamps keyed by (map_x, map_y). Used to confirm a
+    /// punched gem actually died within the last few seconds (Lua's
+    /// `last_destroy` window).
+    pub(super) automine_last_destroy_at: HashMap<(i32, i32), Instant>,
+    /// Tiles temporarily blacklisted from the survey queue (60s TTL by default).
+    pub(super) automine_gem_blacklist: HashMap<(i32, i32), Instant>,
+    /// Number of gemstones mined since the last crystal-seek pass.
+    pub(super) automine_gems_since_crystal_seek: u32,
+    /// Lifetime stats counters surfaced to the dashboard / logs.
+    pub(super) automine_stats: AutomineStats,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct AutomineStats {
+    pub(super) gems_mined: u64,
+    pub(super) hits_sent: u64,
+    pub(super) repairs: u64,
+    pub(super) kicks: u64,
+    pub(super) recycles: u64,
 }
 
 #[derive(Debug)]

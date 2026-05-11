@@ -209,6 +209,13 @@ mod tests {
             world_items: Vec::new(),
             autonether: super::autonether::AutonetherState::new(),
             automine_speed: 1.0,
+            automine_pickaxe_durability: None,
+            automine_admin_in_world: None,
+            automine_pickaxe_broken_count: 0,
+            automine_last_destroy_at: HashMap::new(),
+            automine_gem_blacklist: HashMap::new(),
+            automine_gems_since_crystal_seek: 0,
+            automine_stats: super::state::AutomineStats::default(),
         }
     }
 

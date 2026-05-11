@@ -139,6 +139,13 @@ impl BotSession {
             current_target: None,
             autonether: autonether::AutonetherState::new(),
             automine_speed: 1.0,
+            automine_pickaxe_durability: None,
+            automine_admin_in_world: None,
+            automine_pickaxe_broken_count: 0,
+            automine_last_destroy_at: HashMap::new(),
+            automine_gem_blacklist: HashMap::new(),
+            automine_gems_since_crystal_seek: 0,
+            automine_stats: super::state::AutomineStats::default(),
         }));
 
         let session = Arc::new(Self {
@@ -1495,6 +1502,9 @@ impl BotSession {
             ids::PACKET_ID_GPD => self.apply_profile(&message).await,
             ids::PACKET_ID_MOVEMENT | "U" | "AnP" => {
                 self.maybe_update_player_positions(&message).await;
+                if id == "AnP" {
+                    self.apply_anp_automine_signals(&message).await;
+                }
             }
             ids::PACKET_ID_PLAYER_LEAVE => {
                 self.remove_other_player(&message).await;
@@ -1870,6 +1880,20 @@ impl BotSession {
                 let error_code = message.get_i32("ER").unwrap_or_default();
                 let body = protocol::log_message(&message);
 
+                // Mirror Lua's automine.kerr handler:
+                //   - ER=8  → pickaxe broken; increment the 3-strike counter
+                //              so the automine loop can decide to repair, swap,
+                //              or fatally exit.
+                //   - else  → just bump the kick stat.
+                {
+                    let mut st = self.state.write().await;
+                    st.automine_stats.kicks = st.automine_stats.kicks.saturating_add(1);
+                    if error_code == 8 {
+                        st.automine_pickaxe_broken_count =
+                            st.automine_pickaxe_broken_count.saturating_add(1);
+                    }
+                }
+
                 // Suspected code → reason mapping. Filled in over time as we
                 // observe (action that triggered) → (ER code) pairs. The game
                 // DLL has anti-cheat tags like "SpeedHackDetected" but no
@@ -1880,6 +1904,7 @@ impl BotSession {
                     3 => "invalid wear (equipping a block id you don't own)",
                     4 => "invalid HB target (mining out of range or non-mineable)",
                     7 => "speed-hack / movement violation",
+                    8 => "pickaxe broken (no durability remaining)",
                     _ => "unknown — collect more samples to map",
                 };
 
@@ -1963,6 +1988,11 @@ impl BotSession {
             state.tutorial_phase4_acknowledged = false;
             state.fishing = FishingAutomationState::default();
             state.last_error = None;
+            // Automine: per-world transient data resets, but lifetime stats,
+            // strike counters, and durability tracking persist across hops.
+            state.automine_admin_in_world = None;
+            state.automine_last_destroy_at.clear();
+            state.automine_gem_blacklist.clear();
         }
         self.publish_snapshot().await;
     }
@@ -2128,10 +2158,52 @@ impl BotSession {
             let mut state = self.state.write().await;
             state.growing_tiles.remove(&(map_x, map_y));
             state.pending_hits.remove(&(map_x, map_y));
+            // Mirror Lua's `last_destroy` window: the automine ACTING state
+            // checks "did this tile die in the last few seconds?" before
+            // counting a gem as mined.
+            state.automine_last_destroy_at.insert((map_x, map_y), Instant::now());
+            state.automine_gem_blacklist.remove(&(map_x, map_y));
             apply_destroy_block_change(&mut state, map_x, map_y)
         };
         if changed {
             self.publish_snapshot().await;
+        }
+    }
+
+    /// Mirror Lua's `p:AnP` handler: extract pickaxe durability for our own
+    /// user id and detect admins arriving in the current world.
+    async fn apply_anp_automine_signals(&self, message: &Document) {
+        let packet_uid = message.get_str("U").ok().map(|s| s.to_string());
+        let local_uid = self.state.read().await.user_id.clone();
+
+        // Durability tracking: only update when the packet is about us. The
+        // `D` field is sent on the equipped pickaxe's announce packet.
+        if let (Some(uid), Some(local)) = (packet_uid.as_deref(), local_uid.as_deref()) {
+            if uid == local {
+                if let Some(dur) = message.get_i32("D").ok()
+                    .or_else(|| message.get_i64("D").ok().map(|v| v as i32))
+                {
+                    self.state.write().await.automine_pickaxe_durability = Some(dur);
+                }
+            }
+        }
+
+        // Admin entered the world — set a flag so the automine loop can flee.
+        let is_admin = message.get_bool("IsAdmin").unwrap_or(false);
+        if is_admin {
+            if let Some(uid) = packet_uid {
+                let display = message
+                    .get_str("UN")
+                    .ok()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| uid.clone());
+                self.logger.warn(
+                    "automine",
+                    Some(&self.id),
+                    format!("admin detected in world: {display} ({uid})"),
+                );
+                self.state.write().await.automine_admin_in_world = Some(uid);
+            }
         }
     }
 
