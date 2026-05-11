@@ -29,6 +29,7 @@ dashmap = "6.1"
 parking_lot = "0.12"
 regex = "1"
 hex = "0.4.3"
+base64 = "0.22"
 zip = "0.6"
 tempfile = "3.3"
 

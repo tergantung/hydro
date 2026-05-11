@@ -18,15 +18,11 @@
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "ignoreDeprecations": "6.0",
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
-    }
+      "@/*": ["./src/*"],
+    },
   },
-  "include": ["src"]
+  "include": ["src"],
 }

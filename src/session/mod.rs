@@ -11,14 +11,16 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use parking_lot::Mutex as PlMutex;
 
-
 use bson::{Document, doc};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio::time::{MissedTickBehavior, interval, interval_at, sleep, sleep_until};
 
 use crate::auth;
-use crate::constants::{fishing as fishing_consts, movement as movement_consts, network as network_consts, protocol as ids, timing, tutorial as tutorial_consts};
+use crate::constants::{
+    fishing as fishing_consts, movement as movement_consts, network as network_consts,
+    protocol as ids, timing, tutorial as tutorial_consts,
+};
 use crate::logging::{Direction, Logger};
 use crate::lua_runtime::{self, LuaScriptHandle};
 use crate::models::{
@@ -32,6 +34,7 @@ use crate::pathfinding::astar;
 use crate::protocol;
 use crate::world;
 
+pub mod autoclear;
 pub mod automine;
 pub mod autonether;
 mod bot_session;
@@ -41,11 +44,10 @@ mod movement;
 mod network;
 mod state;
 mod tutorial;
-pub mod autoclear;
 mod world_data;
 pub use bot_session::BotSession;
-pub use manager::SessionManager;
 use fishing::*;
+pub use manager::SessionManager;
 use movement::*;
 use network::*;
 use state::*;
@@ -55,77 +57,12 @@ use world_data::*;
 pub(crate) static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub(crate) static RUNTIME_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /// Pickaxe block IDs from block_types.json, ordered best → worst.
 /// Without one of these equipped, the server silently ignores HB packets,
 /// which is why an un-equipped bot looks like it's "doing nothing".
 
-
 /// Stamp the most recent bot action onto session state so the KErr handler can
 /// later say "you were just doing X when you got kicked".
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -134,13 +71,13 @@ mod tests {
     use bson::{Document, doc};
 
     use super::{
-        BotSession, FishingAutomationState, GrowingTileState, QueuePriority, SchedulerPhase,
-        SchedulerState, SendMode, SessionState, CollectCooldowns, drop_target_tile,
-        apply_destroy_block_change, apply_foreground_block_change, is_tile_ready_to_harvest_at,
+        BotSession, CollectCooldowns, FishingAutomationState, GrowingTileState, QueuePriority,
+        SchedulerPhase, SchedulerState, SendMode, SessionState, apply_destroy_block_change,
+        apply_foreground_block_change, drop_target_tile, is_tile_ready_to_harvest_at,
         update_player_position_from_message,
     };
     use crate::{
-        constants::{movement, protocol as ids, timing},
+        constants::{movement, movement as movement_consts, protocol as ids, timing},
         logging::{EventHub, Logger},
         models::{PlayerPosition, SessionStatus, WorldSnapshot},
         protocol,
@@ -158,6 +95,7 @@ mod tests {
             device_id: String::new(),
             current_host: String::new(),
             current_port: 0,
+            proxy: None,
             current_world: Some("TEST".to_string()),
             pending_world: None,
             pending_world_is_instance: false,
@@ -195,6 +133,7 @@ mod tests {
             other_players: HashMap::new(),
             ai_enemies: HashMap::new(),
             inventory: Vec::new(),
+            worn_items: std::collections::HashSet::new(),
             collectables: HashMap::new(),
             last_error: None,
             awaiting_ready: false,
@@ -220,7 +159,8 @@ mod tests {
     }
 
     fn batch_ids(batch: &[Document]) -> Vec<String> {
-        batch.iter()
+        batch
+            .iter()
             .map(|doc| doc.get_str("ID").unwrap_or_default().to_string())
             .collect()
     }
@@ -332,7 +272,8 @@ mod tests {
             world_y: None,
         };
 
-        let changed = update_player_position_from_message(&doc! { "x": 20.8, "y": 14.88 }, &mut position);
+        let changed =
+            update_player_position_from_message(&doc! { "x": 20.8, "y": 14.88 }, &mut position);
         let (expected_map_x, expected_map_y) = protocol::world_to_map(20.8, 14.88);
 
         assert!(changed);
@@ -352,7 +293,8 @@ mod tests {
             world_y: Some(14.88),
         };
 
-        let changed = update_player_position_from_message(&doc! { "x": 20.8, "y": 14.88 }, &mut position);
+        let changed =
+            update_player_position_from_message(&doc! { "x": 20.8, "y": 14.88 }, &mut position);
 
         assert!(!changed);
     }
@@ -365,6 +307,7 @@ mod tests {
                 device_id: Some("device".to_string()),
             },
             Logger::new(Arc::new(EventHub::new(16))),
+            None,
         )
         .await;
 
@@ -386,12 +329,14 @@ mod tests {
             .remove_other_player(&doc! { "U": "remote-user" })
             .await;
 
-        assert!(!session
-            .state
-            .read()
-            .await
-            .other_players
-            .contains_key("remote-user"));
+        assert!(
+            !session
+                .state
+                .read()
+                .await
+                .other_players
+                .contains_key("remote-user")
+        );
     }
 
     #[test]
@@ -426,7 +371,13 @@ mod tests {
         let mut scheduler = SchedulerState::new();
         scheduler.set_phase(SchedulerPhase::WorldIdle);
         scheduler.st_due = false;
-        scheduler.update_movement(12.8, 9.44, true, movement_consts::ANIM_WALK, movement_consts::DIR_RIGHT);
+        scheduler.update_movement(
+            12.8,
+            9.44,
+            true,
+            movement_consts::ANIM_WALK,
+            movement_consts::DIR_RIGHT,
+        );
         scheduler.enqueue_packets(
             vec![protocol::make_map_point(41, 30)],
             SendMode::Mergeable,
@@ -451,14 +402,12 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_world_idle_emits_empty_movement_packet() {
+    fn scheduler_world_idle_without_due_packets_is_quiet() {
         let mut scheduler = SchedulerState::new();
         scheduler.set_phase(SchedulerPhase::WorldIdle);
         scheduler.st_due = false;
 
-        let batch = scheduler.take_slot_batch().unwrap();
-
-        assert_eq!(batch_ids(&batch), vec![ids::PACKET_ID_MOVEMENT.to_string()]);
+        assert!(scheduler.take_slot_batch().is_none());
     }
 
     #[test]
@@ -530,7 +479,8 @@ mod tests {
         let mut scheduler = SchedulerState::new();
         scheduler.set_phase(SchedulerPhase::MenuStBurst);
         scheduler.st_sync.sample_count = timing::ST_SAMPLE_COUNT - 1;
-        scheduler.st_sync.last_sent_at = Some(std::time::Instant::now() - Duration::from_millis(25));
+        scheduler.st_sync.last_sent_at =
+            Some(std::time::Instant::now() - Duration::from_millis(25));
         scheduler.st_due = false;
 
         let next = scheduler.handle_st_response();
@@ -552,10 +502,3 @@ mod tests {
         assert_eq!(target, (41, 30));
     }
 }
-
-
-
-
-
-
-

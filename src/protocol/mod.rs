@@ -72,7 +72,7 @@ pub fn encode_batch(messages: &[Document]) -> Result<Vec<u8>, String> {
             }
         }
         modified_messages.push(m);
-        time_offset += 1000; 
+        time_offset += 1000;
     }
 
     let outer = wrap_batch(&modified_messages);
@@ -102,12 +102,8 @@ where
         .await
         .map_err(|error| error.to_string())?;
 
-    // DEBUG: log raw bytes so we can see what server actually sends
-    let hex: String = payload.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-    eprintln!("[DEBUG read_packet] total_len={total_len} payload_hex={hex}");
-
     Document::from_reader(Cursor::new(payload)).map_err(|error| {
-        eprintln!("[DEBUG read_packet] BSON parse failed: {error}");
+        eprintln!("[read_packet] BSON parse failed for packet length {total_len}: {error}");
         error.to_string()
     })
 }
@@ -179,7 +175,6 @@ fn bson_to_json(value: &Bson) -> serde_json::Value {
         other => serde_json::json!(format!("{other:?}")),
     }
 }
-
 
 pub fn make_vchk(device_id: &str) -> Document {
     doc! {
@@ -381,9 +376,12 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
 }
 
 pub fn make_mine_move_and_hit(
-    player_x: i32, player_y: i32,
-    move_x: i32, move_y: i32,
-    hit_x: i32, hit_y: i32,
+    player_x: i32,
+    player_y: i32,
+    move_x: i32,
+    move_y: i32,
+    hit_x: i32,
+    hit_y: i32,
     direction: i32,
     anim: i32,
 ) -> Vec<Document> {
@@ -391,23 +389,29 @@ pub fn make_mine_move_and_hit(
     let (new_world_x, new_world_y) = map_to_world(move_x as f64, move_y as f64);
     vec![
         // 1. Start the movement/animation once
-        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
+        make_movement_packet(
+            old_world_x,
+            old_world_y,
+            movement::ANIM_IDLE,
+            direction,
+            false,
+        ),
         make_map_point(move_x, move_y),
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
-        
         // 2. Hits with map-point verification
         make_hit_block(hit_x, hit_y),
         make_map_point(move_x, move_y),
         make_hit_block(hit_x, hit_y),
-        
         // 3. Sync time
         make_st(),
     ]
 }
 
 pub fn make_mine_hit_stationary(
-    player_x: i32, player_y: i32,
-    hit_x: i32, hit_y: i32,
+    player_x: i32,
+    player_y: i32,
+    hit_x: i32,
+    hit_y: i32,
     direction: i32,
 ) -> Vec<Document> {
     let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
@@ -619,12 +623,25 @@ pub fn make_movement_packet(
 ///
 /// The `_anim` parameter is kept for source compatibility but ignored —
 /// the protocol fixes the animation values per packet.
-pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
+pub fn make_move_to_map_point(
+    player_x: i32,
+    player_y: i32,
+    map_x: i32,
+    map_y: i32,
+    anim: i32,
+    direction: i32,
+) -> Vec<Document> {
     let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
     let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
     vec![
         // 1. Settle at current position
-        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
+        make_movement_packet(
+            old_world_x,
+            old_world_y,
+            movement::ANIM_IDLE,
+            direction,
+            false,
+        ),
         // 2. State intent to move to new map point
         make_map_point(map_x, map_y),
         // 3. Complete the movement with the requested animation

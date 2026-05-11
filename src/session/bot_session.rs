@@ -2,15 +2,16 @@
 //! used by main.rs, the HTTP layer, and Lua scripts.
 
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-use bson::{Document, doc};
+use bson::{Bson, Document, doc};
 use parking_lot::Mutex as PlMutex;
 use tokio::net::tcp::OwnedReadHalf;
-use tokio::sync::{mpsc, watch, RwLock};
-use tokio::time::{interval, sleep, MissedTickBehavior};
+use tokio::sync::{RwLock, mpsc, watch};
+use tokio::time::{MissedTickBehavior, interval, sleep};
 
 use crate::auth;
 use crate::constants::{
@@ -33,13 +34,17 @@ use crate::world;
 
 use super::automine::{self, automine_loop};
 use super::autonether;
+use super::fishing::{
+    consume_fishing_bait, find_fishing_map_point, initialize_fishing_gauge, rod_family_name,
+    service_fishing_simulation,
+};
 use super::fishing::{fishing_loop, stop_fishing_game};
 use super::movement::{
     current_facing_direction, drop_target_tile, fallback_straight_line_path,
     is_walkable_map_position, manual_move, manual_place, manual_punch, move_to_map, movement_doc,
     next_manual_step, planned_path, punch_target_from_offset, send_world_chat,
-    set_local_map_position, set_local_world_position, spam_loop, walk_predefined_path,
-    walk_to_map, walk_to_map_cancellable, wait_for_map_position,
+    set_local_map_position, set_local_world_position, spam_loop, wait_for_map_position,
+    walk_predefined_path, walk_to_map, walk_to_map_cancellable,
 };
 use super::network::{
     enqueue_packets, ensure_not_cancelled, read_loop, scheduler_loop, send_doc,
@@ -52,29 +57,24 @@ use super::state::{
     NamedInventoryEntry, OutboundHandle, PendingBatch, QueuePriority, SchedulerCommand,
     SchedulerPhase, SchedulerState, SendMode, SessionCommand, SessionState, StSyncState,
 };
-use super::fishing::{
-    consume_fishing_bait, find_fishing_map_point, initialize_fishing_gauge, rod_family_name,
-    service_fishing_simulation,
-};
 use super::tutorial::{
     ensure_world, ensure_world_cancellable, run_tutorial_script, wait_for_tutorial_phase4_ack,
     wait_for_tutorial_spawn_pod_confirmation, wait_for_tutorial_world_ready_to_enter,
 };
 use super::world_data::{
-    apply_destroy_block_change, apply_foreground_block_change, block_inventory_type_for,
-    block_name_for, block_names, block_type_name_for, block_types,
+    POSITION_PUBLISH_THROTTLE, apply_destroy_block_change, apply_foreground_block_change,
+    block_inventory_type_for, block_name_for, block_names, block_type_name_for, block_types,
     collect_all_visible_collectables, collect_all_visible_collectables_cancellable,
     decode_inventory, find_inventory_bait, inventory_key_for, is_tile_ready_to_harvest_at,
     normalize_block_name, publish_state_snapshot, summarize_tile_counts, tile_index,
-    tile_snapshot_at, wait_for_collectables, POSITION_PUBLISH_THROTTLE,
+    tile_snapshot_at, wait_for_collectables,
 };
-
 
 #[derive(Debug)]
 pub struct BotSession {
     id: String,
     auth: AuthInput,
-    state: Arc<RwLock<SessionState>>,
+    pub(super) state: Arc<RwLock<SessionState>>,
     controller_tx: mpsc::Sender<ControllerEvent>,
     logger: Logger,
     last_position_publish_at: PlMutex<Option<Instant>>,
@@ -85,7 +85,12 @@ impl BotSession {
         self.id.clone()
     }
 
-    pub(super) async fn new(id: String, auth: AuthInput, logger: Logger, proxy: Option<String>) -> Arc<Self> {
+    pub(super) async fn new(
+        id: String,
+        auth: AuthInput,
+        logger: Logger,
+        proxy: Option<String>,
+    ) -> Arc<Self> {
         let (controller_tx, controller_rx) = mpsc::channel(512);
         let device_id = auth.device_id();
         let state = Arc::new(RwLock::new(SessionState {
@@ -189,28 +194,40 @@ impl BotSession {
                     amount: e.amount,
                 })
                 .collect(),
-            ai_enemies: state.ai_enemies.values().map(|e| crate::models::AiEnemySnapshot {
-                ai_id: e.ai_id,
-                map_x: e.map_x,
-                map_y: e.map_y,
-                alive: e.alive,
-            }).collect(),
-            other_players: state.other_players.iter().map(|(id, pos)| crate::models::RemotePlayerSnapshot {
-                user_id: id.clone(),
-                position: pos.clone(),
-            }).collect(),
+            ai_enemies: state
+                .ai_enemies
+                .values()
+                .map(|e| crate::models::AiEnemySnapshot {
+                    ai_id: e.ai_id,
+                    map_x: e.map_x,
+                    map_y: e.map_y,
+                    alive: e.alive,
+                })
+                .collect(),
+            other_players: state
+                .other_players
+                .iter()
+                .map(|(id, pos)| crate::models::RemotePlayerSnapshot {
+                    user_id: id.clone(),
+                    position: pos.clone(),
+                })
+                .collect(),
             last_error: state.last_error.clone(),
             ping_ms: state.ping_ms,
             current_target: state.current_target.clone(),
-            collectables: state.collectables.values().map(|c| crate::models::LuaCollectableSnapshot {
-                id: c.collectable_id,
-                block_type: c.block_type,
-                amount: c.amount,
-                inventory_type: c.inventory_type,
-                pos_x: c.pos_x,
-                pos_y: c.pos_y,
-                is_gem: c.is_gem,
-            }).collect(),
+            collectables: state
+                .collectables
+                .values()
+                .map(|c| crate::models::LuaCollectableSnapshot {
+                    id: c.collectable_id,
+                    block_type: c.block_type,
+                    amount: c.amount,
+                    inventory_type: c.inventory_type,
+                    pos_x: c.pos_x,
+                    pos_y: c.pos_y,
+                    is_gem: c.is_gem,
+                })
+                .collect(),
         }
     }
 
@@ -228,7 +245,9 @@ impl BotSession {
         Ok("Nether automation stopping...".to_string())
     }
 
-    pub async fn autonether_status(&self) -> Result<Option<autonether::AutonetherStatusSnapshot>, String> {
+    pub async fn autonether_status(
+        &self,
+    ) -> Result<Option<autonether::AutonetherStatusSnapshot>, String> {
         let state = self.state.read().await;
         Ok(Some(state.autonether.snapshot()))
     }
@@ -238,7 +257,12 @@ impl BotSession {
     }
 
     pub async fn join_world(&self, world: String, instance: bool) -> Result<(), String> {
-        self.send_command(SessionCommand::JoinWorld { world, instance }).await
+        let world = world.trim().to_uppercase();
+        if world.is_empty() {
+            return Err("world is required".to_string());
+        }
+        self.send_command(SessionCommand::JoinWorld { world, instance })
+            .await
     }
 
     pub async fn leave_world(&self) -> Result<(), String> {
@@ -302,21 +326,14 @@ impl BotSession {
         is_tile_ready_to_harvest_at(&state, map_x, map_y, protocol::csharp_ticks())
     }
 
-    pub async fn queue_drop_item(
-        &self,
-        block_id: i32,
-        amount: i32,
-    ) -> Result<String, String> {
+    pub async fn queue_drop_item(&self, block_id: i32, amount: i32) -> Result<String, String> {
         if amount <= 0 {
             return Err("amount must be greater than 0".to_string());
         }
-        self.send_command(SessionCommand::DropItem {
-            block_id,
-            amount,
-        })
-        .await?;
-        let item_name = block_name_for(block_id as u16)
-            .unwrap_or_else(|| format!("item {block_id}"));
+        self.send_command(SessionCommand::DropItem { block_id, amount })
+            .await?;
+        let item_name =
+            block_name_for(block_id as u16).unwrap_or_else(|| format!("item {block_id}"));
         Ok(format!("drop queued: {amount}x {item_name}"))
     }
 
@@ -433,7 +450,8 @@ impl BotSession {
     }
 
     pub async fn queue_start_autoclear(&self, world: String) -> Result<String, String> {
-        self.send_command(SessionCommand::StartAutoClear { world }).await?;
+        self.send_command(SessionCommand::StartAutoClear { world })
+            .await?;
         Ok("autoclear start queued".to_string())
     }
 
@@ -444,7 +462,10 @@ impl BotSession {
 
     pub async fn queue_set_automine_speed(&self, multiplier: f32) -> Result<String, String> {
         let clamped = multiplier.clamp(0.4, 1.6);
-        self.send_command(SessionCommand::SetAutomineSpeed { multiplier: clamped }).await?;
+        self.send_command(SessionCommand::SetAutomineSpeed {
+            multiplier: clamped,
+        })
+        .await?;
         Ok(format!("automine speed set to {clamped:.2}x"))
     }
 
@@ -699,7 +720,7 @@ impl BotSession {
             .await
             .inventory
             .iter()
-                    .filter(|entry| entry.block_id == block_id)
+            .filter(|entry| entry.block_id == block_id)
             .map(|entry| entry.amount as u32)
             .sum()
     }
@@ -874,60 +895,83 @@ impl BotSession {
                         }
                     }
                     SessionCommand::JoinWorld { world, instance } => {
+                        let world = world.trim().to_uppercase();
+                        if world.is_empty() {
+                            self.set_error("world is required".to_string()).await;
+                            continue;
+                        }
+
+                        let Some(active) = &runtime else {
+                            self.set_error(
+                                "connect the session before joining a world".to_string(),
+                            )
+                            .await;
+                            continue;
+                        };
+
+                        let special_join = instance || world == "MINEWORLD";
+
                         {
                             let mut state = self.state.write().await;
-                            state.pending_world = Some(world.to_uppercase());
-                            state.pending_world_is_instance = instance;
+                            state.pending_world = Some(world.clone());
+                            state.pending_world_is_instance = special_join;
+                            state.serverfull_retries = 0;
                             state.status = SessionStatus::JoiningWorld;
-                            state.current_world = Some(world.to_uppercase());
+                            state.current_world = Some(world.clone());
+                            state.world = None;
+                            state.world_foreground_tiles.clear();
+                            state.world_background_tiles.clear();
+                            state.world_water_tiles.clear();
+                            state.world_wiring_tiles.clear();
+                            state.growing_tiles.clear();
+                            state.collectables.clear();
+                            state.world_items.clear();
                             state.other_players.clear();
                             state.ai_enemies.clear();
+                            state.player_position = PlayerPosition {
+                                map_x: None,
+                                map_y: None,
+                                world_x: None,
+                                world_y: None,
+                            };
+                            state.awaiting_ready = false;
+                            state.tutorial_phase4_acknowledged = false;
                         }
                         self.publish_snapshot().await;
-                        if let Some(active) = &runtime {
-                            {
-                                let mut state = self.state.write().await;
-                                state.status = SessionStatus::LoadingWorld;
-                            }
-                            self.publish_snapshot().await;
-                            if instance {
-                                let enter_world = world.to_uppercase();
-                                let _ = send_docs_exclusive(
-                                    &active.outbound_tx,
-                                    vec![
-                                        protocol::make_world_load_args(&[0]),
-                                        protocol::make_join_world_special(&world, 0),
-                                    ],
-                                )
-                                .await;
-                                sleep(Duration::from_millis(350)).await;
-                                self.logger.state(
-                                    Some(&self.id),
-                                    format!("instance join sent, requesting world data for {enter_world}"),
-                                );
-                                let _ = send_docs_immediate(
-                                    &active.outbound_tx,
-                                    protocol::make_enter_world(&enter_world),
-                                )
-                                .await;
-                            } else {
-                                let enter_world = world.to_uppercase();
-                                let _ = send_docs_immediate(
-                                    &active.outbound_tx,
-                                    vec![protocol::make_join_world(&world)],
-                                )
-                                .await;
-                                sleep(Duration::from_millis(350)).await;
-                                self.logger.state(
-                                    Some(&self.id),
-                                    format!("join sent, requesting world data for {enter_world}"),
-                                );
-                                let _ = send_docs_immediate(
-                                    &active.outbound_tx,
-                                    protocol::make_enter_world(&enter_world),
-                                )
-                                .await;
-                            }
+
+                        let _ = send_scheduler_cmd(
+                            &active.outbound_tx,
+                            SchedulerCommand::SetPhase {
+                                phase: SchedulerPhase::MenuIdle,
+                            },
+                        )
+                        .await;
+
+                        if special_join {
+                            self.logger.state(
+                                Some(&self.id),
+                                format!(
+                                    "special join request sent for {world}; waiting for TTjW accept"
+                                ),
+                            );
+                            let _ = send_docs_immediate(
+                                &active.outbound_tx,
+                                vec![
+                                    protocol::make_world_load_args(&[0]),
+                                    protocol::make_join_world_special(&world, 0),
+                                ],
+                            )
+                            .await;
+                        } else {
+                            self.logger.state(
+                                Some(&self.id),
+                                format!("join request sent for {world}; waiting for TTjW accept"),
+                            );
+                            let _ = send_docs_immediate(
+                                &active.outbound_tx,
+                                vec![protocol::make_join_world(&world)],
+                            )
+                            .await;
                         }
                     }
                     SessionCommand::LeaveWorld => {
@@ -1196,7 +1240,10 @@ impl BotSession {
                     SessionCommand::StartAutomine => {
                         stop_background_worker(&mut automine_stop_tx);
                         let Some(active) = &runtime else {
-                            self.set_error("connect the session before starting automine".to_string()).await;
+                            self.set_error(
+                                "connect the session before starting automine".to_string(),
+                            )
+                            .await;
                             continue;
                         };
                         let (stop_tx, stop_rx) = watch::channel(false);
@@ -1214,7 +1261,9 @@ impl BotSession {
                                 &outbound_tx,
                                 stop_rx,
                                 controller_tx,
-                            ).await {
+                            )
+                            .await
+                            {
                                 logger.error("automine", Some(&session_id), error);
                             }
                         });
@@ -1226,7 +1275,10 @@ impl BotSession {
                     SessionCommand::StartAutoClear { world } => {
                         stop_background_worker(&mut autoclear_stop_tx);
                         let Some(active) = &runtime else {
-                            self.set_error("connect the session before starting autoclear".to_string()).await;
+                            self.set_error(
+                                "connect the session before starting autoclear".to_string(),
+                            )
+                            .await;
                             continue;
                         };
                         let (stop_tx, stop_rx) = watch::channel(false);
@@ -1245,7 +1297,9 @@ impl BotSession {
                                 &outbound_tx,
                                 stop_rx,
                                 controller_tx,
-                            ).await {
+                            )
+                            .await
+                            {
                                 logger.error("autoclear", Some(&session_id), error);
                             }
                         });
@@ -1257,12 +1311,19 @@ impl BotSession {
                     SessionCommand::SetAutomineSpeed { multiplier } => {
                         let clamped = multiplier.clamp(0.4, 1.6);
                         self.state.write().await.automine_speed = clamped;
-                        self.logger.info("automine", Some(&self.id), format!("speed multiplier updated to {clamped:.2}x"));
+                        self.logger.info(
+                            "automine",
+                            Some(&self.id),
+                            format!("speed multiplier updated to {clamped:.2}x"),
+                        );
                     }
                     SessionCommand::StartAutonether => {
                         stop_background_worker(&mut autonether_stop_tx);
                         let Some(active) = &runtime else {
-                            self.set_error("connect the session before starting autonether".to_string()).await;
+                            self.set_error(
+                                "connect the session before starting autonether".to_string(),
+                            )
+                            .await;
                             continue;
                         };
                         let (stop_tx, stop_rx) = watch::channel(false);
@@ -1271,12 +1332,10 @@ impl BotSession {
                         let session_id = self.id.clone();
                         let session = self.clone_arc();
                         tokio::spawn(async move {
-                            if let Err(error) = autonether::autonether_loop(
-                                &session_id,
-                                &logger,
-                                session,
-                                stop_rx,
-                            ).await {
+                            if let Err(error) =
+                                autonether::autonether_loop(&session_id, &logger, session, stop_rx)
+                                    .await
+                            {
                                 logger.error("autonether", Some(&session_id), error);
                             }
                         });
@@ -1284,10 +1343,7 @@ impl BotSession {
                     SessionCommand::StopAutonether => {
                         stop_background_worker(&mut autonether_stop_tx);
                     }
-                    SessionCommand::DropItem {
-                        block_id,
-                        amount,
-                    } => {
+                    SessionCommand::DropItem { block_id, amount } => {
                         let Some(active) = &runtime else {
                             self.set_error("connect the session before dropping items".to_string())
                                 .await;
@@ -1370,11 +1426,22 @@ impl BotSession {
     ) -> Result<ActiveRuntime, String> {
         self.update_status(SessionStatus::Connecting, None).await;
         let proxy = self.state.read().await.proxy.clone();
-        let resolved =
-            auth::resolve_auth(self.auth.clone(), self.logger.clone(), self.id.clone(), proxy).await?;
+        let resolved = auth::resolve_auth(
+            self.auth.clone(),
+            self.logger.clone(),
+            self.id.clone(),
+            proxy,
+        )
+        .await?;
         {
             let mut state = self.state.write().await;
             state.device_id = resolved.device_id.clone();
+            if state.username.is_none() {
+                state.username = resolved.username.clone();
+            }
+            if state.user_id.is_none() {
+                state.user_id = resolved.user_id.clone();
+            }
             if let Some(host) = host_override {
                 state.current_host = host;
             }
@@ -1402,9 +1469,10 @@ impl BotSession {
         protocol::write_batch(&mut stream, &[protocol::make_gpd(&resolved.jwt)])
             .await
             .map_err(|e| e.to_string())?;
-        self.logger.tcp_trace(Direction::Outgoing, "tcp", Some(&self.id), || {
-            protocol::summarize_messages(&[protocol::make_gpd(&resolved.jwt)])
-        });
+        self.logger
+            .tcp_trace(Direction::Outgoing, "tcp", Some(&self.id), || {
+                protocol::summarize_messages(&[protocol::make_gpd(&resolved.jwt)])
+            });
 
         let runtime_id = super::RUNTIME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
         let (read_half, write_half) = stream.into_split();
@@ -1420,7 +1488,15 @@ impl BotSession {
         let logger = self.logger.clone();
         let state_for_scheduler = self.state.clone();
         tokio::spawn(async move {
-            scheduler_loop(write_half, outbound_rx, stop_rx, logger, session_id, state_for_scheduler).await;
+            scheduler_loop(
+                write_half,
+                outbound_rx,
+                stop_rx,
+                logger,
+                session_id,
+                state_for_scheduler,
+            )
+            .await;
         });
 
         self.state.write().await.current_outbound_tx = Some(outbound_tx.clone());
@@ -1499,12 +1575,34 @@ impl BotSession {
     }
 
     async fn apply_profile(&self, profile: &Document) {
+        let username = extract_profile_username(profile);
+        let user_id = extract_profile_user_id(profile);
+        let inventory = decode_inventory(profile);
+
         let mut state = self.state.write().await;
-        state.username = profile.get_str("UN").ok().map(ToOwned::to_owned);
-        state.user_id = profile.get_str("U").ok().map(ToOwned::to_owned);
-        state.inventory = decode_inventory(profile);
+        if username.is_some() {
+            state.username = username;
+        }
+        if user_id.is_some() {
+            state.user_id = user_id;
+        }
+        state.inventory = inventory;
         state.last_error = None;
+        let detected_username = state.username.clone();
+        let detected_user_id = state.user_id.clone();
         drop(state);
+
+        if detected_username.is_none() && detected_user_id.is_none() {
+            self.logger.warn(
+                "session",
+                Some(&self.id),
+                format!(
+                    "GPd profile did not include a recognizable username/user_id; keys={}",
+                    summarize_profile_keys(profile)
+                ),
+            );
+        }
+
         self.publish_snapshot().await;
     }
 
@@ -1516,11 +1614,9 @@ impl BotSession {
         let id = message.get_str("ID").unwrap_or_default();
         match id {
             ids::PACKET_ID_ST => {
-                let _ = send_scheduler_cmd(
-                    &runtime.outbound_tx,
-                    SchedulerCommand::StResponseReceived,
-                )
-                .await;
+                let _ =
+                    send_scheduler_cmd(&runtime.outbound_tx, SchedulerCommand::StResponseReceived)
+                        .await;
             }
             ids::PACKET_ID_KEEPALIVE
             | ids::PACKET_ID_VCHK
@@ -1575,7 +1671,8 @@ impl BotSession {
                 self.apply_wear_update(&message, false).await;
             }
             ids::PACKET_ID_FISHING_GAME_ACTION => {
-                self.apply_fishing_message(&message, &runtime.outbound_tx).await;
+                self.apply_fishing_message(&message, &runtime.outbound_tx)
+                    .await;
             }
             ids::PACKET_ID_FISHING_RESULT => {
                 let result = message
@@ -1614,19 +1711,31 @@ impl BotSession {
                         let (world, is_instance, retry_count) = {
                             let mut state = self.state.write().await;
                             state.serverfull_retries = state.serverfull_retries.saturating_add(1);
-                            let world = state.pending_world.clone().or_else(|| state.current_world.clone());
-                            (world, state.pending_world_is_instance, state.serverfull_retries)
+                            let world = state
+                                .pending_world
+                                .clone()
+                                .or_else(|| state.current_world.clone());
+                            (
+                                world,
+                                state.pending_world_is_instance,
+                                state.serverfull_retries,
+                            )
                         };
 
                         const SERVERFULL_RETRY_LIMIT: u32 = 60;
                         if retry_count <= SERVERFULL_RETRY_LIMIT {
                             if let Some(world) = world {
-                                self.logger.info("session", Some(&self.id), 
+                                self.logger.info("session", Some(&self.id),
                                     format!("JR: 8 (Server Full) detected. Manually retrying shard #{retry_count} for {world} (is_instance={is_instance})"));
                                 let _ = send_doc(
                                     &runtime.outbound_tx,
-                                    protocol::make_join_world_retry(&world, retry_count as i32, is_instance),
-                                ).await;
+                                    protocol::make_join_world_retry(
+                                        &world,
+                                        retry_count as i32,
+                                        is_instance,
+                                    ),
+                                )
+                                .await;
                                 retry_triggered = true;
                             }
                         }
@@ -1636,9 +1745,18 @@ impl BotSession {
                         let err = message
                             .get_str("E")
                             .or_else(|_| message.get_str("Err"))
-                            .unwrap_or_else(|_| if jr == 8 { "server full" } else { "join denied" });
-                        self.logger
-                            .warn("session", Some(&self.id), format!("TTjW denied (JR={jr}): {err}"));
+                            .unwrap_or_else(|_| {
+                                if jr == 8 {
+                                    "server full"
+                                } else {
+                                    "join denied"
+                                }
+                            });
+                        self.logger.warn(
+                            "session",
+                            Some(&self.id),
+                            format!("TTjW denied (JR={jr}): {err}"),
+                        );
                         self.set_error(format!("TTjW denied: {err}")).await;
                     }
                 } else {
@@ -1658,7 +1776,7 @@ impl BotSession {
                         state.current_world = world.clone();
                         state.status = SessionStatus::LoadingWorld;
                         state.other_players.clear();
-                            state.ai_enemies.clear();
+                        state.ai_enemies.clear();
                     }
                     self.publish_snapshot().await;
                     if let Some(world) = world {
@@ -1678,6 +1796,17 @@ impl BotSession {
                 let raw = protocol::binary_bytes(message.get("W")).unwrap_or_default();
                 let world_name = self.state.read().await.current_world.clone();
                 let decoded_world = world::decode_gwc(world_name.clone(), &raw)?;
+                self.logger.state(
+                    Some(&self.id),
+                    format!(
+                        "GWC decoded for {}: {}x{}, collectables={}, world_items={}",
+                        world_name.as_deref().unwrap_or("unknown"),
+                        decoded_world.snapshot.width,
+                        decoded_world.snapshot.height,
+                        decoded_world.collectables.len(),
+                        decoded_world.world_items.len()
+                    ),
+                );
                 let tutorial_phase_owned = {
                     let state = self.state.read().await;
                     state.tutorial_automation_running
@@ -1686,6 +1815,8 @@ impl BotSession {
                 {
                     let mut state = self.state.write().await;
                     state.world = Some(decoded_world.snapshot.clone());
+                    state.pending_world = None;
+                    state.pending_world_is_instance = false;
                     state.serverfull_retries = 0;
                     state.world_foreground_tiles = decoded_world.foreground_tiles;
                     state.world_background_tiles = decoded_world.background_tiles;
@@ -1693,39 +1824,68 @@ impl BotSession {
                     state.world_wiring_tiles = decoded_world.wiring_tiles;
                     state.growing_tiles.clear();
                     state.collectables.clear();
-                    
+
                     // Dump to world_objects.txt for analysis
                     {
                         use std::fs::OpenOptions;
                         use std::io::Write;
-                        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("world_objects.txt") {
-                            let _ = writeln!(file, "\n--- WORLD: {} ---", world_name.as_deref().unwrap_or("unknown"));
-                            
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("world_objects.txt")
+                        {
+                            let _ = writeln!(
+                                file,
+                                "\n--- WORLD: {} ---",
+                                world_name.as_deref().unwrap_or("unknown")
+                            );
+
                             for c in &decoded_world.collectables {
                                 let (mx, my) = protocol::world_to_map(c.pos_x, c.pos_y);
-                                let name = block_types().get(&(c.block_type as u16)).map(|info| info.name.as_str()).unwrap_or("Unknown");
-                                let _ = writeln!(file, "[Collectable] ID={} Type={} ({}) at ({}, {}) map=({}, {})", 
-                                    c.collectable_id, c.block_type, name, c.pos_x, c.pos_y, mx.floor() as i32, my.floor() as i32);
-                                
-                                state.collectables.insert(c.collectable_id, CollectableState {
-                                    collectable_id: c.collectable_id,
-                                    block_type: c.block_type,
-                                    amount: c.amount,
-                                    inventory_type: c.inventory_type,
-                                    pos_x: c.pos_x,
-                                    pos_y: c.pos_y,
-                                    map_x: mx.floor() as i32,
-                                    map_y: my.floor() as i32,
-                                    is_gem: c.is_gem,
-                                    gem_type: c.gem_type,
-                                    is_nwc: false,
-                                });
+                                let name = block_types()
+                                    .get(&(c.block_type as u16))
+                                    .map(|info| info.name.as_str())
+                                    .unwrap_or("Unknown");
+                                let _ = writeln!(
+                                    file,
+                                    "[Collectable] ID={} Type={} ({}) at ({}, {}) map=({}, {})",
+                                    c.collectable_id,
+                                    c.block_type,
+                                    name,
+                                    c.pos_x,
+                                    c.pos_y,
+                                    mx.floor() as i32,
+                                    my.floor() as i32
+                                );
+
+                                state.collectables.insert(
+                                    c.collectable_id,
+                                    CollectableState {
+                                        collectable_id: c.collectable_id,
+                                        block_type: c.block_type,
+                                        amount: c.amount,
+                                        inventory_type: c.inventory_type,
+                                        pos_x: c.pos_x,
+                                        pos_y: c.pos_y,
+                                        map_x: mx.floor() as i32,
+                                        map_y: my.floor() as i32,
+                                        is_gem: c.is_gem,
+                                        gem_type: c.gem_type,
+                                        is_nwc: false,
+                                    },
+                                );
                             }
 
                             for i in &decoded_world.world_items {
-                                let name = block_types().get(&i.item_id).map(|info| info.name.as_str()).unwrap_or("Unknown");
-                                let _ = writeln!(file, "[WorldItem] ID={} ({}) at ({}, {}) state={}", 
-                                    i.item_id, name, i.map_x, i.map_y, i.state);
+                                let name = block_types()
+                                    .get(&i.item_id)
+                                    .map(|info| info.name.as_str())
+                                    .unwrap_or("Unknown");
+                                let _ = writeln!(
+                                    file,
+                                    "[WorldItem] ID={} ({}) at ({}, {}) state={}",
+                                    i.item_id, name, i.map_x, i.map_y, i.state
+                                );
                             }
                         }
                     }
@@ -1763,8 +1923,16 @@ impl BotSession {
             }
             ids::PACKET_ID_R_AI => {
                 let ai_id = message.get_i32("AId").ok(); // Is it an i32 or a blob?
-                self.logger.info("session", Some(&self.id), format!("rAI packet: ai_id={:?} full={}", ai_id, protocol::log_message(&message)));
-                
+                self.logger.info(
+                    "session",
+                    Some(&self.id),
+                    format!(
+                        "rAI packet: ai_id={:?} full={}",
+                        ai_id,
+                        protocol::log_message(&message)
+                    ),
+                );
+
                 if let Some(id) = ai_id {
                     let mut state = self.state.write().await;
                     state.ai_enemies.remove(&id);
@@ -1800,10 +1968,10 @@ impl BotSession {
                             let _ = send_docs_exclusive(
                                 &runtime.outbound_tx,
                                 protocol::make_spawn_packets(
-                                map_x.round() as i32,
-                                map_y.round() as i32,
-                                world_x,
-                                world_y,
+                                    map_x.round() as i32,
+                                    map_y.round() as i32,
+                                    world_x,
+                                    world_y,
                                 ),
                             )
                             .await;
@@ -1845,7 +2013,11 @@ impl BotSession {
                         .pending_world
                         .clone()
                         .or_else(|| state.current_world.clone());
-                    (world, state.pending_world_is_instance, state.serverfull_retries)
+                    (
+                        world,
+                        state.pending_world_is_instance,
+                        state.serverfull_retries,
+                    )
                 };
 
                 if is_serverfull && retry_count > SERVERFULL_RETRY_LIMIT {
@@ -1880,7 +2052,11 @@ impl BotSession {
                             format!("OoIP ServerFull retry #{retry_count} for {world} (is_instance={is_instance})"));
                         let _ = send_doc(
                             &runtime.outbound_tx,
-                            protocol::make_join_world_retry(&world, retry_count as i32, is_instance),
+                            protocol::make_join_world_retry(
+                                &world,
+                                retry_count as i32,
+                                is_instance,
+                            ),
                         )
                         .await;
                     } else if is_instance {
@@ -1902,7 +2078,8 @@ impl BotSession {
                         )
                         .await;
                     } else {
-                        let _ = send_doc(&runtime.outbound_tx, protocol::make_join_world(&world)).await;
+                        let _ =
+                            send_doc(&runtime.outbound_tx, protocol::make_join_world(&world)).await;
                     }
                 }
             }
@@ -1933,7 +2110,9 @@ impl BotSession {
                 // DLL has anti-cheat tags like "SpeedHackDetected" but no
                 // exposed numeric enum, so these are educated guesses.
                 let reason_hint = match error_code {
-                    1 => "anim/physics mismatch (likely a=FALL on flat-y or position outside reachable delta)",
+                    1 => {
+                        "anim/physics mismatch (likely a=FALL on flat-y or position outside reachable delta)"
+                    }
                     2 => "rate limit / flood (too many actions per second)",
                     3 => "invalid wear (equipping a block id you don't own)",
                     4 => "invalid HB target (mining out of range or non-mineable)",
@@ -1942,18 +2121,24 @@ impl BotSession {
                     _ => "unknown — collect more samples to map",
                 };
 
-                let raw_hex = message.to_vec().ok().map(|b| hex::encode(b)).unwrap_or_else(|| "ERR_BSON_SERIALIZE".to_string());
-                self.logger.error("session", Some(&self.id), 
-                    format!("KICKED: code={} hint={} raw_bson={}", error_code, reason_hint, raw_hex));
+                let raw_hex = message
+                    .to_vec()
+                    .ok()
+                    .map(|b| hex::encode(b))
+                    .unwrap_or_else(|| "ERR_BSON_SERIALIZE".to_string());
+                self.logger.error(
+                    "session",
+                    Some(&self.id),
+                    format!(
+                        "KICKED: code={} hint={} raw_bson={}",
+                        error_code, reason_hint, raw_hex
+                    ),
+                );
 
                 let (last_action, action_age, pos) = {
                     let st = self.state.read().await;
                     let age = st.last_action_at.map(|t| t.elapsed());
-                    (
-                        st.last_action_hint.clone(),
-                        age,
-                        st.player_position.clone(),
-                    )
+                    (st.last_action_hint.clone(), age, st.player_position.clone())
                 };
 
                 let action_str = match (last_action.as_deref(), action_age) {
@@ -2009,7 +2194,7 @@ impl BotSession {
             state.growing_tiles.clear();
             state.collectables.clear();
             state.other_players.clear();
-                            state.ai_enemies.clear();
+            state.ai_enemies.clear();
             state.player_position = PlayerPosition {
                 map_x: None,
                 map_y: None,
@@ -2061,7 +2246,8 @@ impl BotSession {
         if let Some(uid) = packet_uid {
             let mut state = self.state.write().await;
             if local_uid.as_deref() == Some(uid) {
-                let changed = update_player_position_from_message(message, &mut state.player_position);
+                let changed =
+                    update_player_position_from_message(message, &mut state.player_position);
                 if let Ok(direction) = message.get_i32("d") {
                     state.current_direction = direction;
                 }
@@ -2099,8 +2285,12 @@ impl BotSession {
                     world_y: None,
                 };
                 if update_player_position_from_message(message, &mut dummy_pos) {
-                    if let Some(x) = dummy_pos.map_x { ai.map_x = x as i32; }
-                    if let Some(y) = dummy_pos.map_y { ai.map_y = y as i32; }
+                    if let Some(x) = dummy_pos.map_x {
+                        ai.map_x = x as i32;
+                    }
+                    if let Some(y) = dummy_pos.map_y {
+                        ai.map_y = y as i32;
+                    }
                     drop(state);
                     self.publish_snapshot_position_throttled().await;
                 }
@@ -2109,7 +2299,7 @@ impl BotSession {
         }
     }
 
-    async fn remove_other_player(&self, message: &Document) {
+    pub(super) async fn remove_other_player(&self, message: &Document) {
         let Ok(user_id) = message.get_str("U") else {
             return;
         };
@@ -2118,7 +2308,13 @@ impl BotSession {
             return;
         }
 
-        let removed = self.state.write().await.other_players.remove(user_id).is_some();
+        let removed = self
+            .state
+            .write()
+            .await
+            .other_players
+            .remove(user_id)
+            .is_some();
         if removed {
             self.publish_snapshot().await;
         }
@@ -2195,7 +2391,9 @@ impl BotSession {
             // Mirror Lua's `last_destroy` window: the automine ACTING state
             // checks "did this tile die in the last few seconds?" before
             // counting a gem as mined.
-            state.automine_last_destroy_at.insert((map_x, map_y), Instant::now());
+            state
+                .automine_last_destroy_at
+                .insert((map_x, map_y), Instant::now());
             state.automine_gem_blacklist.remove(&(map_x, map_y));
             apply_destroy_block_change(&mut state, map_x, map_y)
         };
@@ -2214,7 +2412,9 @@ impl BotSession {
         // `D` field is sent on the equipped pickaxe's announce packet.
         if let (Some(uid), Some(local)) = (packet_uid.as_deref(), local_uid.as_deref()) {
             if uid == local {
-                if let Some(dur) = message.get_i32("D").ok()
+                if let Some(dur) = message
+                    .get_i32("D")
+                    .ok()
                     .or_else(|| message.get_i64("D").ok().map(|v| v as i32))
                 {
                     self.state.write().await.automine_pickaxe_durability = Some(dur);
@@ -2282,42 +2482,75 @@ impl BotSession {
 
     async fn apply_inventory_update(&self, message: &Document) {
         let get_u16 = |key: &str| -> u16 {
-            message.get(key)
-                .and_then(|v| v.as_i64().map(|i| i as u16)
-                .or_else(|| v.as_f64().map(|f| f as u16)))
+            message
+                .get(key)
+                .and_then(|v| {
+                    v.as_i64()
+                        .map(|i| i as u16)
+                        .or_else(|| v.as_f64().map(|f| f as u16))
+                })
                 .unwrap_or_default()
         };
         let get_i32 = |key: &str| -> Option<i32> {
-            message.get(key)
-                .and_then(|v| v.as_i64().map(|i| i as i32)
-                .or_else(|| v.as_f64().map(|f| f as i32)))
+            message.get(key).and_then(|v| {
+                v.as_i64()
+                    .map(|i| i as i32)
+                    .or_else(|| v.as_f64().map(|f| f as i32))
+            })
         };
 
-        let Some(inventory_key) = get_i32("Bi") else { 
-            self.logger.warn("session", Some(&self.id), format!("InventoryUpdate missing Bi: {}", protocol::log_message(message)));
-            return; 
+        let Some(inventory_key) = get_i32("Bi") else {
+            self.logger.warn(
+                "session",
+                Some(&self.id),
+                format!(
+                    "InventoryUpdate missing Bi: {}",
+                    protocol::log_message(message)
+                ),
+            );
+            return;
         };
         let amount = get_u16("Amt");
         let block_id = get_u16("BT");
         let inventory_type = get_u16("IT");
 
-        self.logger.info("session", Some(&self.id), 
-            format!("InventoryUpdate: key={} block_id={} amount={} type={}", inventory_key, block_id, amount, inventory_type));
+        self.logger.info(
+            "session",
+            Some(&self.id),
+            format!(
+                "InventoryUpdate: key={} block_id={} amount={} type={}",
+                inventory_key, block_id, amount, inventory_type
+            ),
+        );
 
         let mut state = self.state.write().await;
         if amount == 0 {
             // Remove from worn_items if the item was equipped (e.g. pickaxe broke)
             if state.worn_items.remove(&block_id) {
-                self.logger.warn("session", Some(&self.id), 
-                    format!("Item {} broke/removed — auto-cleared from worn_items", block_id));
+                self.logger.warn(
+                    "session",
+                    Some(&self.id),
+                    format!(
+                        "Item {} broke/removed — auto-cleared from worn_items",
+                        block_id
+                    ),
+                );
             }
             state.inventory.retain(|e| e.inventory_key != inventory_key);
         } else {
-            if let Some(entry) = state.inventory.iter_mut().find(|e| e.inventory_key == inventory_key) {
+            if let Some(entry) = state
+                .inventory
+                .iter_mut()
+                .find(|e| e.inventory_key == inventory_key)
+            {
                 entry.amount = amount;
                 entry.block_id = block_id;
                 entry.inventory_type = inventory_type;
-                self.logger.info("session", Some(&self.id), format!("Updated existing inventory entry for key={}", inventory_key));
+                self.logger.info(
+                    "session",
+                    Some(&self.id),
+                    format!("Updated existing inventory entry for key={}", inventory_key),
+                );
             } else {
                 state.inventory.push(InventoryEntry {
                     inventory_key,
@@ -2325,7 +2558,11 @@ impl BotSession {
                     inventory_type,
                     amount,
                 });
-                self.logger.info("session", Some(&self.id), format!("Created new inventory entry for key={}", inventory_key));
+                self.logger.info(
+                    "session",
+                    Some(&self.id),
+                    format!("Created new inventory entry for key={}", inventory_key),
+                );
             }
         }
         drop(state);
@@ -2341,8 +2578,8 @@ impl BotSession {
         let target_uid = message.get_str("U").ok().map(|s| s.to_string());
         let target_name = message.get_str("UN").ok().map(|s| s.to_string());
 
-        let is_me = (my_uid.is_some() && my_uid == target_uid) 
-                 || (my_username.is_some() && my_username == target_name);
+        let is_me = (my_uid.is_some() && my_uid == target_uid)
+            || (my_username.is_some() && my_username == target_name);
 
         if is_me {
             if let Ok(block_id) = message.get_i32("hBlock") {
@@ -2352,23 +2589,45 @@ impl BotSession {
                 } else {
                     st.worn_items.remove(&(block_id as u16));
                 }
-                self.logger.info("session", Some(&self.id), 
-                    format!("Worn state updated: {} block_id={}", if is_wearing { "EQUIPPED" } else { "REMOVED" }, block_id));
+                self.logger.info(
+                    "session",
+                    Some(&self.id),
+                    format!(
+                        "Worn state updated: {} block_id={}",
+                        if is_wearing { "EQUIPPED" } else { "REMOVED" },
+                        block_id
+                    ),
+                );
             }
         }
     }
 
     async fn track_collectable(&self, message: &Document, is_nwc: bool) {
-        self.logger.info("session", Some(&self.id), format!("COLLECTABLE PACKET: {}", protocol::log_message(message)));
+        self.logger.info(
+            "session",
+            Some(&self.id),
+            format!("COLLECTABLE PACKET: {}", protocol::log_message(message)),
+        );
 
-        let Some(collectable_id) = message.get_i32("CollectableID").ok()
+        let Some(collectable_id) = message
+            .get_i32("CollectableID")
+            .ok()
             .or_else(|| message.get_i32("id").ok())
-            .or_else(|| message.get_i32("cid").ok()) else {
+            .or_else(|| message.get_i32("cid").ok())
+        else {
             return;
         };
 
-        let pos_x = message.get_f64("PosX").ok().or_else(|| message.get_i32("PosX").ok().map(|v| v as f64)).unwrap_or_default();
-        let pos_y = message.get_f64("PosY").ok().or_else(|| message.get_i32("PosY").ok().map(|v| v as f64)).unwrap_or_default();
+        let pos_x = message
+            .get_f64("PosX")
+            .ok()
+            .or_else(|| message.get_i32("PosX").ok().map(|v| v as f64))
+            .unwrap_or_default();
+        let pos_y = message
+            .get_f64("PosY")
+            .ok()
+            .or_else(|| message.get_i32("PosY").ok().map(|v| v as f64))
+            .unwrap_or_default();
         // Collectables in nCo/nWC packets are already in map-tile units.
         // Do NOT call world_to_map here.
         let (mx, my) = (pos_x, pos_y);
@@ -2421,9 +2680,17 @@ impl BotSession {
                 let _ = f.write_all(format!("AIHD: {}\n", message).as_bytes());
             });
 
-        let x_val = message.get_f64("x").ok().or_else(|| message.get_i32("x").ok().map(|v| v as f64)).unwrap_or_default();
-        let y_val = message.get_f64("y").ok().or_else(|| message.get_i32("y").ok().map(|v| v as f64)).unwrap_or_default();
-        
+        let x_val = message
+            .get_f64("x")
+            .ok()
+            .or_else(|| message.get_i32("x").ok().map(|v| v as f64))
+            .unwrap_or_default();
+        let y_val = message
+            .get_f64("y")
+            .ok()
+            .or_else(|| message.get_i32("y").ok().map(|v| v as f64))
+            .unwrap_or_default();
+
         let map_x = (x_val / 32.0) as i32;
         let map_y = (y_val / 32.0) as i32;
         let killed = message.get_bool("IC").unwrap_or(false)
@@ -2458,8 +2725,11 @@ impl BotSession {
     /// HP, and animation state.
     async fn track_ai_spawn(&self, message: &Document) {
         let Some(blob) = protocol::binary_bytes(message.get("AId")) else {
-            self.logger.warn("session", Some(&self.id),
-                "AI packet missing AId binary field".to_string());
+            self.logger.warn(
+                "session",
+                Some(&self.id),
+                "AI packet missing AId binary field".to_string(),
+            );
             return;
         };
 
@@ -2478,7 +2748,7 @@ impl BotSession {
                 let ai_id = i32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]);
                 let map_x = i32::from_le_bytes([blob[18], blob[19], blob[20], blob[21]]);
                 let map_y = i32::from_le_bytes([blob[22], blob[23], blob[24], blob[25]]);
-                
+
                 if (0..=1024).contains(&map_x) && (0..=1024).contains(&map_y) {
                     let mut state = self.state.write().await;
                     if let Some(enemy) = state.ai_enemies.get_mut(&ai_id) {
@@ -2498,8 +2768,16 @@ impl BotSession {
             }
 
             // Log other event types for analysis
-            self.logger.info("session", Some(&self.id), 
-                format!("AI packet event_type={} len={} hex={}", event_type, blob.len(), hex::encode(blob)));
+            self.logger.info(
+                "session",
+                Some(&self.id),
+                format!(
+                    "AI packet event_type={} len={} hex={}",
+                    event_type,
+                    blob.len(),
+                    hex::encode(blob)
+                ),
+            );
             return;
         }
 
@@ -2524,8 +2802,11 @@ impl BotSession {
         // [0, 1024] is corrupt — refuse to register it. This is belt-and-braces
         // alongside the byte 14 filter above.
         if !(0..=1024).contains(&map_x) || !(0..=1024).contains(&map_y) {
-            self.logger.warn("session", Some(&self.id),
-                format!("rejected AI spawn ID={ai_id} with out-of-range coords ({map_x},{map_y})"));
+            self.logger.warn(
+                "session",
+                Some(&self.id),
+                format!("rejected AI spawn ID={ai_id} with out-of-range coords ({map_x},{map_y})"),
+            );
             return;
         }
 
@@ -2547,11 +2828,7 @@ impl BotSession {
         self.publish_snapshot_position_throttled().await;
     }
 
-    async fn apply_fishing_message(
-        &self,
-        message: &Document,
-        outbound_tx: &OutboundHandle,
-    ) {
+    async fn apply_fishing_message(&self, message: &Document, outbound_tx: &OutboundHandle) {
         let minigame_type = message.get_i32("MGT").unwrap_or_default();
         if minigame_type != 2 {
             return;
@@ -2589,5 +2866,93 @@ impl BotSession {
             }
             _ => {}
         }
+    }
+}
+
+fn extract_profile_username(profile: &Document) -> Option<String> {
+    find_string_field(
+        profile,
+        &[
+            "UN",
+            "Username",
+            "username",
+            "RealUsername",
+            "realUsername",
+            "DisplayName",
+            "displayName",
+            "TitleDisplayName",
+        ],
+    )
+    .or_else(|| {
+        decoded_profile_data(profile).and_then(|player_data| {
+            find_string_field(
+                &player_data,
+                &[
+                    "UN",
+                    "Username",
+                    "username",
+                    "RealUsername",
+                    "realUsername",
+                    "DisplayName",
+                    "displayName",
+                    "TitleDisplayName",
+                ],
+            )
+        })
+    })
+}
+
+fn extract_profile_user_id(profile: &Document) -> Option<String> {
+    find_string_field(
+        profile,
+        &["U", "UserID", "userID", "PlayerId", "playerId", "PlayFabId"],
+    )
+    .or_else(|| {
+        decoded_profile_data(profile).and_then(|player_data| {
+            find_string_field(
+                &player_data,
+                &["U", "UserID", "userID", "PlayerId", "playerId", "PlayFabId"],
+            )
+        })
+    })
+}
+
+fn decoded_profile_data(profile: &Document) -> Option<Document> {
+    let raw = protocol::binary_bytes(profile.get("pD"))?;
+    Document::from_reader(Cursor::new(raw)).ok()
+}
+
+fn find_string_field(document: &Document, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match document.get(*key) {
+        Some(Bson::String(value)) => clean_profile_string(value),
+        Some(Bson::Int32(value)) => Some(value.to_string()),
+        Some(Bson::Int64(value)) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn clean_profile_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn summarize_profile_keys(profile: &Document) -> String {
+    let mut keys = profile.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+
+    if let Some(player_data) = decoded_profile_data(profile) {
+        let mut player_data_keys = player_data.keys().cloned().collect::<Vec<_>>();
+        player_data_keys.sort();
+        format!(
+            "top=[{}] pD=[{}]",
+            keys.join(","),
+            player_data_keys.join(",")
+        )
+    } else {
+        format!("top=[{}]", keys.join(","))
     }
 }
