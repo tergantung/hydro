@@ -879,12 +879,19 @@ impl BotSession {
                             state.pending_world = Some(world.to_uppercase());
                             state.pending_world_is_instance = instance;
                             state.status = SessionStatus::JoiningWorld;
+                            state.current_world = Some(world.to_uppercase());
                             state.other_players.clear();
                             state.ai_enemies.clear();
                         }
                         self.publish_snapshot().await;
                         if let Some(active) = &runtime {
+                            {
+                                let mut state = self.state.write().await;
+                                state.status = SessionStatus::LoadingWorld;
+                            }
+                            self.publish_snapshot().await;
                             if instance {
+                                let enter_world = world.to_uppercase();
                                 let _ = send_docs_exclusive(
                                     &active.outbound_tx,
                                     vec![
@@ -893,10 +900,33 @@ impl BotSession {
                                     ],
                                 )
                                 .await;
+                                sleep(Duration::from_millis(350)).await;
+                                self.logger.state(
+                                    Some(&self.id),
+                                    format!("instance join sent, requesting world data for {enter_world}"),
+                                );
+                                let _ = send_docs_immediate(
+                                    &active.outbound_tx,
+                                    protocol::make_enter_world(&enter_world),
+                                )
+                                .await;
                             } else {
-                                let _ =
-                                    send_doc(&active.outbound_tx, protocol::make_join_world(&world))
-                                        .await;
+                                let enter_world = world.to_uppercase();
+                                let _ = send_docs_immediate(
+                                    &active.outbound_tx,
+                                    vec![protocol::make_join_world(&world)],
+                                )
+                                .await;
+                                sleep(Duration::from_millis(350)).await;
+                                self.logger.state(
+                                    Some(&self.id),
+                                    format!("join sent, requesting world data for {enter_world}"),
+                                );
+                                let _ = send_docs_immediate(
+                                    &active.outbound_tx,
+                                    protocol::make_enter_world(&enter_world),
+                                )
+                                .await;
                             }
                         }
                     }
@@ -1362,20 +1392,19 @@ impl BotSession {
         );
 
         let mut stream = net::connect_tcp(&host, net::default_port()).await?;
-        self.send_and_expect(
-            &mut stream,
-            &[protocol::make_vchk(&resolved.device_id)],
-            ids::PACKET_ID_VCHK,
-        )
-        .await?;
-        let gpd = self
-            .send_and_expect(
-                &mut stream,
-                &[protocol::make_gpd(&resolved.jwt)],
-                ids::PACKET_ID_GPD,
-            )
+        // Send VChk. Server no longer echoes "VChk" back — it now replies with
+        // {"sGot":0} (an ack with no "ID" field). Accept any reply as success.
+        self.send_and_receive(&mut stream, &[protocol::make_vchk(&resolved.device_id)])
             .await?;
-        self.apply_profile(&gpd).await;
+        // Send GPd and immediately enter the read loop — server sends {"sGot":0}
+        // as an ack first, then the actual GPd response later. handle_inbound
+        // will call apply_profile when it receives the GPd packet.
+        protocol::write_batch(&mut stream, &[protocol::make_gpd(&resolved.jwt)])
+            .await
+            .map_err(|e| e.to_string())?;
+        self.logger.tcp_trace(Direction::Outgoing, "tcp", Some(&self.id), || {
+            protocol::summarize_messages(&[protocol::make_gpd(&resolved.jwt)])
+        });
 
         let runtime_id = super::RUNTIME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
         let (read_half, write_half) = stream.into_split();
@@ -1425,7 +1454,7 @@ impl BotSession {
                 });
 
             if extracted.is_empty() {
-                received_batches.push("empty response batch".to_string());
+                // Server may send {"sGot":0} ack packets with no "ID" — skip them
                 continue;
             }
 
@@ -1615,6 +1644,7 @@ impl BotSession {
                 } else {
                     let world = message
                         .get_str("WN")
+                        .or_else(|_| message.get_str("W"))
                         .ok()
                         .map(ToOwned::to_owned)
                         .or_else(|| {
@@ -1632,7 +1662,11 @@ impl BotSession {
                     }
                     self.publish_snapshot().await;
                     if let Some(world) = world {
-                        let _ = send_docs_exclusive(
+                        self.logger.state(
+                            Some(&self.id),
+                            format!("TTjW accepted, requesting world data for {world}"),
+                        );
+                        let _ = send_docs_immediate(
                             &runtime.outbound_tx,
                             protocol::make_enter_world(&world),
                         )

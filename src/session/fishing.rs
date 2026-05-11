@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bson::Document;
-use tokio::sync::{watch, RwLock};
-use tokio::time::{interval, sleep, MissedTickBehavior};
+use tokio::sync::{RwLock, watch};
+use tokio::time::{MissedTickBehavior, interval, sleep};
 
 use crate::constants::fishing as fishing_consts;
 use crate::logging::Logger;
@@ -15,14 +15,14 @@ use crate::protocol;
 use super::movement::{movement_doc, walk_to_map_cancellable};
 use super::network::{send_doc, send_docs, send_docs_exclusive};
 use super::state::{
-    FishingAutomationState, FishingPhase, FishingTarget, NamedInventoryEntry,
-    OutboundHandle, SessionState,
+    FishingAutomationState, FishingPhase, FishingTarget, NamedInventoryEntry, OutboundHandle,
+    SessionState,
 };
 use super::{block_name_for, find_inventory_bait, normalize_block_name, publish_state_snapshot};
 
 pub(super) fn find_fishing_map_point(
     world: Option<&WorldSnapshot>,
-    _water_tiles: &[u16],
+    water_tiles: &[u16],
     player_x: i32,
     player_y: i32,
     direction: &str,
@@ -35,10 +35,16 @@ pub(super) fn find_fishing_map_point(
     let width = world.width as i32;
     let height = world.height as i32;
     let target_x = player_x + if direction == "left" { -1 } else { 1 };
-    let target_y = player_y - 1;
+    let target_y = player_y + 1;
     if target_x < 0 || target_x >= width || target_y < 0 || target_y >= height {
         return Err(format!(
             "fishing target ({target_x}, {target_y}) is outside world bounds"
+        ));
+    }
+    let target_index = (target_y as u32 * world.width + target_x as u32) as usize;
+    if !water_tiles.is_empty() && water_tiles.get(target_index).copied().unwrap_or(0) == 0 {
+        return Err(format!(
+            "fishing target ({target_x}, {target_y}) has no water"
         ));
     }
     Ok((target_x, target_y))
@@ -75,7 +81,8 @@ pub(super) fn initialize_fishing_gauge(fishing: &mut FishingAutomationState, now
     fishing.sim_target_speed = rod_profile.slider_speed * 0.20;
     fishing.sim_fish_move_speed = bucket.fish_move_speed;
     fishing.sim_run_frequency = bucket.run_frequency;
-    fishing.sim_pull_strength = fishing_consts::pull_strength(bucket, rod_family_name(Some(rod_block)));
+    fishing.sim_pull_strength =
+        fishing_consts::pull_strength(bucket, rod_family_name(Some(rod_block)));
     fishing.sim_min_land_delay = bucket.min_land_delay;
     fishing.sim_last_at = Some(now);
     fishing.sim_fish_position = fishing_consts::DEFAULT_FISH_POSITION;
@@ -316,11 +323,7 @@ pub(super) async fn fishing_loop(
                     target.map_y,
                     bait.block_id as i32,
                 ),
-                protocol::make_start_fishing_game(
-                    target.map_x,
-                    target.map_y,
-                    bait.block_id as i32,
-                ),
+                protocol::make_start_fishing_game(target.map_x, target.map_y, bait.block_id as i32),
             ],
         )
         .await?;
@@ -370,10 +373,7 @@ pub(super) async fn fishing_loop(
 
             let fishing = state.read().await.fishing.clone();
             let phase = fishing.phase;
-            if phase == FishingPhase::CleanupPending {
-                continue;
-            }
-            if phase == FishingPhase::Completed {
+            if phase == FishingPhase::CleanupPending || phase == FishingPhase::Completed {
                 break;
             }
             if !fishing.active {
@@ -441,4 +441,3 @@ pub(super) async fn stop_fishing_game(
     )
     .await
 }
-

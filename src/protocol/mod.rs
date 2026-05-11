@@ -102,7 +102,14 @@ where
         .await
         .map_err(|error| error.to_string())?;
 
-    Document::from_reader(Cursor::new(payload)).map_err(|error| error.to_string())
+    // DEBUG: log raw bytes so we can see what server actually sends
+    let hex: String = payload.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+    eprintln!("[DEBUG read_packet] total_len={total_len} payload_hex={hex}");
+
+    Document::from_reader(Cursor::new(payload)).map_err(|error| {
+        eprintln!("[DEBUG read_packet] BSON parse failed: {error}");
+        error.to_string()
+    })
 }
 
 pub fn binary_bytes(value: Option<&Bson>) -> Option<Vec<u8>> {
@@ -272,8 +279,12 @@ pub fn make_enter_world(world: &str) -> Vec<Document> {
 }
 
 pub fn make_enter_world_eid(world: &str, eid: &str) -> Vec<Document> {
+    let mut get_world = doc! { "ID": ids::PACKET_ID_GET_WORLD, "W": world, "WB": 0 };
+    if !eid.is_empty() {
+        get_world.insert("eID", eid);
+    }
     vec![
-        doc! { "ID": ids::PACKET_ID_GET_WORLD, "eID": eid, "W": world, "WB": 0 },
+        get_world,
         doc! { "ID": "A", "AE": 2 },
         doc! { "ID": "A", "AE": 6 },
         doc! { "ID": "A", "AE": 14 },

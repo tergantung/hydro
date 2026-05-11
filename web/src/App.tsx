@@ -1453,7 +1453,7 @@ function App() {
                               <div className="grid gap-3 rounded-2xl glass-dark p-4">
                                 <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
                                   <Fish className="size-3.5" />
-                                  Automated Fishing <Badge variant="destructive" className="ml-2 text-[8px]">MAINTENANCE</Badge>
+                                  Automated Fishing
                                 </div>
                                 <Input
                                   value={inputs.bait}
@@ -1472,7 +1472,6 @@ function App() {
                                         startFishing(session.id, "left", inputs.bait),
                                       )
                                     }
-                                    disabled
                                   >
                                     Fish Left
                                   </Button>
@@ -1484,7 +1483,6 @@ function App() {
                                         startFishing(session.id, "right", inputs.bait),
                                       )
                                     }
-                                    disabled
                                   >
                                     Fish Right
                                   </Button>
@@ -1492,7 +1490,6 @@ function App() {
                                     variant="outline"
                                     className="rounded-lg border border-border bg-black/40 hover:bg-primary/10 hover:border-primary/40 text-muted-foreground hover:text-primary transition-all"
                                     onClick={() => void runAction(() => stopFishing(session.id))}
-                                    disabled
                                   >
                                     Stop
                                   </Button>
